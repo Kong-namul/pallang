@@ -117,7 +117,7 @@
 
     // 발자국 그리기
     ctx.clearRect(0, 0, W, H);
-    ctx.drawImage(tex, 0, 0, W, H);
+    if (tex.width && tex.height) ctx.drawImage(tex, 0, 0, W, H);   // 창 크기가 0일 때(숨겨진 iframe) 오류 방지
     for (let i = prints.length - 1; i >= 0; i--) {
       const p = prints[i];
       p.age += dt;

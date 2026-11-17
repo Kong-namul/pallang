@@ -174,7 +174,7 @@
   function refItem(r) {
     const lic = r.license ? `<span class="chip">${esc(r.license === '없음' ? '라이선스 없음 · 기법만 참고' : r.license)}</span>` : '';
     return `<li>
-      <div class="rt"><span class="chip css">${esc(r.kind || '링크')}</span>${lic}</div>
+      <div class="rt"><span class="chip css">${esc(r.kind || '링크')}</span>${lic}${r.unverified ? '<span class="chip">열어서 확인은 못 함</span>' : ''}</div>
       <a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.name)}</a>
       <span class="rn">${esc(r.note || '')}</span>
       <span class="ru">${esc(r.url.replace(/^https?:\/\//, ''))}</span>
