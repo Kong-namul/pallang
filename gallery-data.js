@@ -171,6 +171,8 @@ window.GALLERY = {
       hint: "커서 주위를 맴돌며 졸졸 따라와요. 도는 방향과 거리가 몇 초마다 바뀌고, 가끔 코앞까지 와서 살펴본 뒤 물러나요. 빠를 땐 가는 쪽을, 느리게 떠 있을 땐 커서 쪽을 보며 옆으로 미끄러져요." },
     { tab: "firefly", file: 'examples/firefly/04-scroll-wake.html', title: "스크롤 따라 하나씩 켜지기", situation: "스크롤 스토리텔링, 밤 테마 랜딩", tech: ["JS", "Canvas"],
       hint: "내린 만큼 하나씩 깨어나요. 깨어날 땐 희미하게 두어 번 깜빡이다가 자기 박자로 빛나고, 올리면 반대 순서로 잠들어요. 빨리 스크롤하면 휘청이고, 끝까지 내리면 박자가 맞춰져요. (미리보기 안에서 스크롤)" },
+    { tab: "ladybug", file: 'examples/ladybug/04-cross.html', title: "화면 가로지르기", situation: "빈 화면·로딩·배경에 생기를 주는 장면", tech: ["JS", "SVG", "Canvas"], touch: true,
+      hint: "종종걸음과 멈칫이 섞여 가로질러 가요. 가끔 멈춰 딱지날개를 열고 짧게 폴짝 날며, 뜰 땐 몸이 커지고 그림자가 오른쪽 아래로 떨어져요. 가까이 누르면 죽은 척했다가 더 빨리 가요." },
     /*__MORE_EX__*/
   ],
 

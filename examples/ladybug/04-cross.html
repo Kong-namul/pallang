@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  무당벌레 04 · 화면 가로지르기 (위에서 내려다봄 — 카메라는 그대로, 깊이는 몸의 크기·그림자로만)
+  출구 쪽을 향하는 방향 + 거리에 따라 출렁이는 굽이 + 느린 잡음 = "가고 싶은 방향". 몸은 그쪽으로 한 프레임 최대 9°씩만 돌아섬.
+  "가다 서다" 상태 기계로 종종걸음 ↔ 멈칫, 다리는 실제로 움직인 거리만큼만 굴림. 가끔 중간에 멈칫 → 딱지날개 탁 →
+  짧게 휘청 날아 폴짝(높이 = 몸이 커지고 그림자가 오른쪽 아래로 떨어짐) → 통 튀며 착지, 날개 접고 딱지날개를 한 번 더 고쳐 덮음.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>무당벌레 04 · 화면 가로지르기</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  .stage { touch-action: none; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas class="fill" id="cv"></canvas>
+<div class="stage" id="stage"></div>
+<p class="hint"><b>가다 서다</b>로 화면을 가로지름 · 가끔 <b>폴짝 비행</b> · 가까이 <b>탭</b>하면 죽은 척</p>
+
+<script src="../../assets/ladybug.js"></script>
+<script>
+  const { makeLadybug, loop, clamp, lerp, rand, ease, smooth, damp, angDiff, RAD, TAU } = LB;
+  const stage = document.getElementById('stage');
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  const bg = document.createElement('canvas');        // 바닥 무늬는 크기가 바뀔 때만 한 번 그려 둠
+  const bctx = bg.getContext('2d');
+  let W = 0, H = 0, U = 28, dpr = 1;
+  const MAXF = 9 / RAD;                                // 한 프레임에 도는 최대 각도
+  const COLORS = ['#d9291b', '#e0401c', '#c81f17', '#e2621d', '#d43322'];
+
+  // ---------------- 바닥 (위에서 본 흙·잔돌) ----------------
+  const grains = Array.from({ length: 260 }, () => ({ x: Math.random(), y: Math.random(), r: rand(0.4, 1.3), a: rand(0.08, 0.22) }));
+  const pebbles = Array.from({ length: 16 }, () => ({ x: Math.random(), y: Math.random(), r: rand(0.18, 0.5), e: rand(0.6, 0.95), rot: rand(0, TAU), a: rand(0.05, 0.12) }));
+  const dapples = Array.from({ length: 5 }, () => ({ a: rand(0, TAU), b: rand(0, TAU), r: rand(0.16, 0.3), sp: rand(0.05, 0.12) }));
+  const ripples = [];
+
+  function paintGround() {
+    const cs = getComputedStyle(document.documentElement);
+    const muted = cs.getPropertyValue('--muted').trim() || '#5b6b62';
+    const leaf = cs.getPropertyValue('--leaf').trim() || '#5d9b5a';
+    bg.width = cv.width; bg.height = cv.height;
+    bctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    bctx.clearRect(0, 0, W, H);
+    // 잔돌: 납작한 타원 + 오른쪽 아래로 살짝 그림자 → 위에서 본 입체
+    for (const p of pebbles) {
+      const r = p.r * U;
+      bctx.save(); bctx.translate(p.x * W, p.y * H); bctx.rotate(p.rot);
+      bctx.globalAlpha = p.a * 1.4; bctx.fillStyle = 'rgba(0,0,0,.5)';
+      bctx.beginPath(); bctx.ellipse(r * 0.12, r * 0.18, r, r * p.e, 0, 0, TAU); bctx.fill();
+      bctx.globalAlpha = p.a * 2.2; bctx.fillStyle = muted;
+      bctx.beginPath(); bctx.ellipse(0, 0, r, r * p.e, 0, 0, TAU); bctx.fill();
+      bctx.restore();
+    }
+    // 흙 알갱이 + 이끼 점
+    for (let i = 0; i < grains.length; i++) {
+      const g = grains[i];
+      bctx.globalAlpha = g.a; bctx.fillStyle = i % 7 === 0 ? leaf : muted;
+      bctx.beginPath(); bctx.arc(g.x * W, g.y * H, g.r * U / 28, 0, TAU); bctx.fill();
+    }
+    bctx.globalAlpha = 1;
+  }
+
+  function drawGround(t, dt) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    ctx.drawImage(bg, 0, 0);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // 나뭇잎 사이로 떨어지는 빛: 천천히 떠다님 → 가만있어도 살아 있는 화면
+    const S = Math.max(W, H);
+    for (const d of dapples) {
+      const x = W * (0.5 + 0.42 * Math.sin(d.a + t * d.sp)), y = H * (0.5 + 0.4 * Math.sin(d.b + t * d.sp * 1.6));
+      const r = d.r * S;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, 'rgba(255,255,215,.12)'); g.addColorStop(1, 'rgba(255,255,215,0)');
+      ctx.fillStyle = g; ctx.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+    // 탭 물결
+    for (let i = ripples.length - 1; i >= 0; i--) {
+      const r = ripples[i]; r.t += dt;
+      const k = r.t / 0.5;
+      if (k >= 1) { ripples.splice(i, 1); continue; }
+      ctx.globalAlpha = (1 - k) * 0.5; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(r.x, r.y, U * (0.25 + 0.9 * ease(k)), 0, TAU); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // ---------------- 무당벌레 ----------------
+  let lb = null;
+  const bug = {
+    x: 0, y: 0, th: 0, v: 0, vT: 0, vx: 0, vy: 0, st: 'gone', tm: 0.4, tt: 0,
+    sx: 0, sy: 0, ex: 0, ey: 0,               // 들어온 곳 → 나갈 곳
+    speedMul: 1, curveAmp: 0.3, wl: 100, ph: 0, noise: 0, dist: 0, boost: 1,
+    willFly: false, flyAt: 0.5, fly: null, look: 0, flinch: 0, squash: 0,
+  };
+  const dirOf = (th) => ({ x: Math.sin(th), y: -Math.cos(th) });       // th = 0 이면 화면 위쪽
+  const angTo = (x, y) => Math.atan2(x - bug.x, -(y - bug.y));
+
+  function resize() {
+    const ow = W, oh = H;
+    W = stage.clientWidth; H = stage.clientHeight;
+    dpr = Math.min(2, devicePixelRatio || 1);
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    U = clamp(Math.min(W, H) * 0.1, 22, 54);
+    if (ow > 0) {                               // 크기가 바뀌어도 화면 비율상 같은 자리
+      const fx = W / ow, fy = H / oh;
+      for (const k of ['x', 'sx', 'ex']) bug[k] *= fx;
+      for (const k of ['y', 'sy', 'ey']) bug[k] *= fy;
+    }
+    if (lb) lb.size = U;
+    paintGround();
+  }
+  resize();
+  addEventListener('resize', resize);
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', paintGround);
+
+  /** 새 무당벌레: 아무 쪽에서 들어와 반대쪽으로. 속도·굽이·비행 여부가 매번 다름 */
+  function spawn() {
+    if (lb) lb.remove();
+    const b = bug, m = U * 1.3;
+    const horiz = Math.random() < (W >= H ? 0.72 : 0.35);
+    let s, e;
+    if (horiz) { s = { x: -m, y: H * rand(0.2, 0.8) }; e = { x: W + m, y: H * rand(0.2, 0.8) }; }
+    else       { s = { x: W * rand(0.2, 0.8), y: -m }; e = { x: W * rand(0.2, 0.8), y: H + m }; }
+    if (Math.random() < 0.5) [s, e] = [e, s];
+    b.sx = b.x = s.x; b.sy = b.y = s.y; b.ex = e.x; b.ey = e.y;
+    b.th = angTo(e.x, e.y) + rand(-0.35, 0.35);
+    b.v = 0; b.vx = 0; b.vy = 0; b.dist = 0; b.noise = 0; b.boost = 1;
+    b.speedMul = rand(0.78, 1.3);
+    b.curveAmp = Math.random() < 0.25 ? rand(0.05, 0.15) : rand(0.2, 0.62);   // 거의 곧게 ~ 크게 굽이
+    b.wl = U * rand(3.5, 8);
+    b.ph = rand(0, TAU);
+    b.willFly = Math.random() < 0.6;
+    b.flyAt = rand(0.3, 0.62);
+    lb = makeLadybug(stage, { size: U, color: COLORS[(Math.random() * COLORS.length) | 0], x: b.x, y: b.y, heading: b.th * RAD });
+    go();
+  }
+
+  function go(fast) {                   // 종종걸음 한 번
+    bug.st = 'go';
+    bug.tm = fast ? rand(0.9, 1.4) : rand(0.4, 1.5);
+    bug.vT = U * (fast ? rand(4.4, 5.2) : rand(2.1, 3.8) * bug.speedMul);
+  }
+  function pause(sec) { bug.st = 'pause'; bug.tm = sec; bug.look = rand(-12, 12); lb.alert = 1.7; lb.twitch(1.1); }
+  function progress() {
+    const b = bug, dx = b.ex - b.sx, dy = b.ey - b.sy;
+    return ((b.x - b.sx) * dx + (b.y - b.sy) * dy) / (dx * dx + dy * dy);
+  }
+  const inView = (pad) => bug.x > pad && bug.x < W - pad && bug.y > pad && bug.y < H - pad;
+
+  /** 가고 싶은 방향: 출구 쪽 + 거리에 따라 출렁이는 굽이 + 느린 잡음 */
+  function wantDir(dt) {
+    const b = bug;
+    b.noise = clamp(damp(b.noise, 0, 0.6, dt) + rand(-1, 1) * 1.5 * dt, -0.35, 0.35);
+    const fade = 1 - smooth(0.82, 1, progress());      // 끝에선 곧게 빠져나감
+    return angTo(b.ex, b.ey) + (b.curveAmp * Math.sin(b.dist / b.wl * TAU + b.ph) + b.noise) * fade;
+  }
+  /** 목표 각도로 부드럽게 돌기. rate(rad/s)와 한 프레임 9° 둘 다 넘지 않음 */
+  function turnToward(to, rate, dt) {
+    const w = clamp(angDiff(bug.th, to) * 5, -rate, rate);
+    const d = clamp(w * dt, -MAXF, MAXF);
+    bug.th += d;
+    return d;
+  }
+
+  stage.addEventListener('pointerdown', (e) => {
+    ripples.push({ x: e.clientX, y: e.clientY, t: 0 });
+    const b = bug;
+    if (!lb || b.st === 'gone' || b.st === 'fly') return;          // 날고 있을 땐 못 잡음
+    const d = Math.hypot(e.clientX - lb.x, e.clientY - lb.y);
+    if (d < Math.max(64, U * 3)) {
+      // 깜짝! → 그 자리에서 다리·더듬이 숨기고 죽은 척. 이륙 준비 중이었으면 비행은 취소
+      if (b.st === 'dead' || b.st === 'wake') b.tm = Math.max(b.tm, 0) + rand(0.6, 1);
+      else b.tm = rand(1.3, 2.3);
+      b.st = 'dead'; b.flinch = 1; b.v = 0; b.willFly = false;
+    } else if (d < U * 6 && (b.st === 'go' || b.st === 'pause')) {
+      pause(rand(0.3, 0.6)); lb.alert = 3;                        // 멀리서 톡 → 멈칫만
+    }
+  });
+
+  loop((dt, t) => {
+    const b = bug;
+    b.tm -= dt; b.tt += dt;
+    drawGround(t, dt);
+
+    if (b.st === 'gone') {                       // 빠져나간 뒤 잠깐 빈 화면 → 다음 녀석
+      if (b.tm <= 0) spawn();
+      return;
+    }
+
+    let moved = 0, alert = 1, lookT = 0, tuckT = 0, foldT = 0;
+    let openT = 0, wingsT = 0, buzzT = 0, scripted = false, alt = 0, jit = 0, wobble = 0;
+    const prog = progress();
+    b.boost = damp(b.boost, 1, 0.22, dt);         // 죽은 척 뒤 서두름이 천천히 풀림
+
+    if (b.st === 'go') {
+      b.v = damp(b.v, b.vT * b.boost, 14, dt);
+      moved += Math.abs(turnToward(wantDir(dt), 3.2, dt)) * U * 0.3;
+      if (b.willFly && prog > b.flyAt && inView(U * 1.5)) {
+        b.st = 'hesitate'; b.tm = rand(0.7, 1.2); b.tt = 0; lb.twitch(1.4);
+      } else if (b.tm <= 0) {
+        const calm = b.boost < 1.3 && inView(U * 0.6);
+        if (calm && Math.random() < 0.72) pause(Math.random() < 0.15 ? rand(0.8, 1.4) : rand(0.15, 0.55));
+        else go(b.boost > 1.3);
+      }
+    } else if (b.st === 'pause') {
+      // 멈칫: 몸은 서고 더듬이만 톡톡, 고개 살짝
+      b.v = damp(b.v, 0, 22, dt);
+      moved += Math.abs(turnToward(wantDir(dt), 1.2, dt)) * U * 0.42;   // 제자리에서 살짝 방향 고침
+      lookT = b.look;
+      if (Math.random() < dt * 2.2) lb.twitch(0.8);
+      if (b.tm <= 0) { lb.alert = 1; go(); }
+    } else if (b.st === 'hesitate') {
+      // 이륙 전 머뭇: 급정지 → 좌우 두리번 → 몸을 살짝 낮춤
+      b.v = damp(b.v, 0, 20, dt);
+      alert = 3; lookT = 14 * Math.sin(b.tt * 6.5) * Math.min(1, b.tt * 3);
+      b.squash = damp(b.squash, 0.5, 6, dt);
+      if (b.tm <= 0) { b.st = 'open'; b.tt = 0; b.willFly = false; }
+    } else if (b.st === 'open') {
+      // 딱지날개 탁(살짝 넘쳤다 자리) → 속날개 펴짐 → 붕 떨기 시작
+      b.v = 0; scripted = true; alert = 0.6; tuckT = 0.25;
+      lb.open = 1 - Math.exp(-b.tt * 22) * Math.cos(b.tt * 30);
+      lb.wings = clamp((b.tt - 0.14) / 0.18, 0, 1);
+      lb.buzz = clamp((b.tt - 0.32) / 0.12, 0, 1);
+      jit = lb.buzz * 0.012 * U;
+      b.squash = damp(b.squash, 0, 8, dt);
+      if (b.tt > 0.55) {
+        const dur = rand(0.85, 1.3);
+        b.fly = { dur, peak: rand(30, 46), sp: U * rand(3.2, 4.6) / dur, wph: rand(0, TAU), wf: rand(6, 9) };
+        const d = dirOf(b.th);
+        b.vx = d.x * U * 0.6; b.vy = d.y * U * 0.6;
+        b.st = 'fly'; b.tt = 0;
+      }
+    } else if (b.st === 'fly') {
+      // 짧은 휘청 비행: 속도 벡터를 쫓고, 몸은 실제 속도 방향을 따라 돎
+      const f = b.fly, p = clamp(b.tt / f.dur, 0, 1);
+      scripted = true; alert = 0.4; foldT = 0.3;
+      tuckT = p < 0.75 ? 0.75 : lerp(0.75, 0.05, (p - 0.75) / 0.25);   // 내리기 직전 다리를 내림
+      lb.open = damp(lb.open, 1, 10, dt); lb.wings = 1; lb.buzz = 1;
+      const sw = 0.38 * Math.sin(b.tt * f.wf + f.wph) + 0.15 * Math.sin(b.tt * 17.3);
+      const ang = wantDir(dt) + sw;
+      const sp = f.sp * (0.55 + 0.75 * Math.sin(Math.PI * Math.min(1, p * 1.15)));
+      b.vx = damp(b.vx, Math.sin(ang) * sp, 6, dt);
+      b.vy = damp(b.vy, -Math.cos(ang) * sp, 6, dt);
+      turnToward(Math.atan2(b.vx, -b.vy), 7, dt);
+      alt = f.peak * Math.pow(Math.sin(Math.PI * p), 0.8) + 2.5 * Math.sin(b.tt * 13) * Math.sin(Math.PI * p);
+      jit = 0.02 * U;
+      if (p >= 1) { b.st = 'land'; b.tt = 0; b.squash = 1; b.v = 0; }
+    } else if (b.st === 'land') {
+      // 착지: 통 튀고(작은 바운스) → 붕 멈춤 → 속날개 접힘 → 딱지날개 덮었다가 한 번 더 들썩 고쳐 덮음
+      scripted = true; alert = 2; tuckT = 0;
+      const tt = b.tt;
+      alt = 7 * Math.exp(-tt * 9) * Math.abs(Math.sin(tt * 19));
+      b.vx = damp(b.vx, 0, 9, dt); b.vy = damp(b.vy, 0, 9, dt);           // 미끄러지며 섬
+      moved += Math.hypot(b.vx, b.vy) * dt * 0.6;
+      lb.buzz = damp(lb.buzz, 0, 28, dt);
+      lb.wings = tt < 0.12 ? 1 : 1 - ease((tt - 0.12) / 0.42);
+      const oT = tt < 0.3 ? 1 : tt < 0.74 ? 0 : tt < 0.86 ? 0.2 : 0;
+      lb.open = damp(lb.open, oT, 14, dt);
+      wobble = 3.5 * Math.sin(tt * 22) * Math.exp(-tt * 3.5) * smooth(0.25, 0.4, tt);   // 자리 잡는 씰룩
+      if (tt > 1.15) { lb.open = 0; lb.wings = 0; lb.buzz = 0; b.vx = b.vy = 0; pause(rand(0.3, 0.6)); }
+    } else if (b.st === 'dead') {
+      // 죽은 척: 그대로 굳음. 다리·더듬이는 몸 밑으로
+      b.v = 0; alert = 0; tuckT = 1; foldT = 1;
+      if (b.tm <= 0) { b.st = 'wake'; b.tm = rand(0.7, 0.95); }
+    } else if (b.st === 'wake') {
+      // 깨어남: 더듬이 먼저 → 다리 → 아까보다 빠르게 출발
+      b.v = 0; alert = 3; tuckT = b.tm > 0.36 ? 1 : 0;
+      if (b.tm <= 0) { b.boost = 1.75; go(true); }
+    }
+
+    // 이동: 걸을 땐 몸이 향한 쪽으로, 날거나 착지 미끄럼 땐 속도 벡터로
+    if (b.st === 'fly' || b.st === 'land') {
+      b.x += b.vx * dt; b.y += b.vy * dt;
+      b.dist += Math.hypot(b.vx, b.vy) * dt;
+    } else {
+      const d = dirOf(b.th);
+      b.x += d.x * b.v * dt; b.y += d.y * b.v * dt;
+      b.vx = d.x * b.v; b.vy = d.y * b.v;
+      b.dist += b.v * dt; moved += b.v * dt;
+    }
+
+    // 날개 상태: 대본이 없는 상태에선 목표값으로 빠르게 정리
+    if (!scripted) {
+      lb.open = damp(lb.open, openT, 18, dt);
+      lb.wings = damp(lb.wings, wingsT, 14, dt);
+      lb.buzz = damp(lb.buzz, buzzT, 30, dt);
+    }
+    b.flinch = damp(b.flinch, 0, 9, dt);
+    if (b.st !== 'hesitate') b.squash = damp(b.squash, 0, 11, dt);
+    lb.tuck = damp(lb.tuck, tuckT, tuckT > lb.tuck ? 40 : 9, dt);
+    lb.antFold = damp(lb.antFold, foldT, foldT > lb.antFold ? 40 : 12, dt);
+    lb.look = damp(lb.look, lookT, 14, dt);
+    if (b.st !== 'pause') lb.alert = alert;
+    lb.alt = alt;
+    lb.size = U * (1 - 0.07 * b.flinch - 0.06 * b.squash);
+    lb.x = b.x + rand(-1, 1) * jit; lb.y = b.y + rand(-1, 1) * jit;
+    lb.heading = b.th * RAD + wobble;
+    lb.walk(moved);
+    lb.update(dt);
+    lb.render();
+
+    // 반대편으로 빠져나가면 잠깐 쉬었다 다음 녀석
+    const out = !inView(-U * 0.95);
+    if ((prog > 0.8 && out && b.st !== 'fly') || prog > 1.05) {
+      lb.remove(); lb = null;
+      b.st = 'gone'; b.tm = rand(0.5, 1.5);
+    }
+  });
+</script>
+</body>
+</html>
