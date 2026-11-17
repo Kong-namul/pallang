@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  반딧불이 04 · 스크롤 따라 하나씩 켜지기
+  스크롤한 만큼 반딧불이가 하나씩 깨어남: 처음엔 희미하게 두어 번 깜빡이다가 자기 박자로 깜빡이기 시작.
+  다시 올리면 깨어난 순서의 반대로 하나씩 잠듦(서서히 꺼짐). 스크롤을 빨리 하면 공기가 흔들리듯 살짝 휘청이고,
+  먼 반딧불이는 페이지보다 천천히 움직여 깊이감(시차)이 생김. 끝까지 내리면 서로 박자가 맞춰짐(쿠라모토 결합).
+  일부러 밤 장면 한 가지 색으로 만들었어요.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>반딧불이 04 · 스크롤 따라 하나씩 켜지기</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  :root { color-scheme: dark; }
+  html, body { background: #0b1114; }
+  body { overflow-y: auto; overflow-x: hidden; color: #dfe8dc; }
+  #sky { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  main { position: relative; }
+  section { height: 100vh; display: grid; place-items: center; padding: 0 24px; text-align: center; }
+  section p { margin: 0; font-size: 14px; line-height: 1.7; color: rgba(223, 232, 220, 0.62); text-wrap: balance; }
+  section b { color: #e9f6a8; font-weight: 600; }
+  .read { position: fixed; right: 12px; top: 10px; margin: 0; font: 11px/1.6 ui-monospace, "JetBrains Mono", monospace;
+          color: rgba(223, 232, 220, 0.55); font-variant-numeric: tabular-nums; white-space: pre; text-align: right; pointer-events: none; }
+  .hint { color: rgba(223, 232, 220, 0.55); }
+  .hint b { color: #e9f6a8; }
+</style>
+</head>
+<body>
+<canvas id="sky"></canvas>
+<pre class="read" id="read"></pre>
+<main>
+  <section><p>↓ <b>스크롤</b> 하면 반딧불이가 하나씩 깨어나요</p></section>
+  <section><p>깨어날 땐 희미하게 두어 번 깜빡이다가<br>자기 박자로 빛나기 시작해요</p></section>
+  <section><p>거꾸로 올리면 깨어난 반대 순서로<br>하나씩 <b>잠들어요</b></p></section>
+  <section><p>스크롤을 빨리 하면 공기가 흔들리듯 휘청여요<br>먼 반딧불이는 천천히 움직여요</p></section>
+  <section><p>끝까지 내리면<br>서로 <b>박자가 맞춰져요</b></p></section>
+</main>
+<p class="hint">미리보기 안에서 <b>스크롤</b> 해 보세요</p>
+
+<script>
+(() => {
+  'use strict';
+  const TAU = Math.PI * 2;
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+
+  const cv = document.getElementById('sky');
+  const ctx = cv.getContext('2d');
+  const readEl = document.getElementById('read');
+  const bg = document.createElement('canvas');
+  const glow = document.createElement('canvas');      // 빛 번짐 한 장을 미리 그려 두고 크기만 바꿔 찍음
+  let W = 0, H = 0, dpr = 1, U = 1;
+
+  function makeGlow() {
+    const n = 128; glow.width = glow.height = n;
+    const g = glow.getContext('2d');
+    const rg = g.createRadialGradient(n / 2, n / 2, 0, n / 2, n / 2, n / 2);
+    rg.addColorStop(0, 'rgba(240,255,170,1)');
+    rg.addColorStop(0.12, 'rgba(214,250,120,0.85)');
+    rg.addColorStop(0.35, 'rgba(170,230,80,0.28)');
+    rg.addColorStop(1, 'rgba(120,200,60,0)');
+    g.fillStyle = rg; g.fillRect(0, 0, n, n);
+  }
+  makeGlow();
+
+  // ---------- 밤 배경: 하늘 + 별 + 아래쪽 풀숲 실루엣 ----------
+  function paintBg() {
+    bg.width = cv.width; bg.height = cv.height;
+    const g = bg.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const sky = g.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, '#0a1220'); sky.addColorStop(0.6, '#0d1a1c'); sky.addColorStop(1, '#0b1410');
+    g.fillStyle = sky; g.fillRect(0, 0, W, H);
+    for (let i = 0; i < W * H / 3500; i++) {
+      g.fillStyle = `rgba(220,230,255,${rand(0.08, 0.45).toFixed(2)})`;
+      g.beginPath(); g.arc(rand(0, W), rand(0, H * 0.55), rand(0.3, 1.1), 0, TAU); g.fill();
+    }
+    g.fillStyle = '#060c08';
+    for (let x = -10; x < W + 10; x += rand(2, 5)) {   // 풀잎 실루엣
+      const h = rand(0.06, 0.16) * H, lean = rand(-14, 14);
+      g.beginPath(); g.moveTo(x - 3, H); g.quadraticCurveTo(x + lean * 0.4, H - h * 0.6, x + lean, H - h); g.quadraticCurveTo(x + lean * 0.4 + 2, H - h * 0.5, x + 3, H); g.fill();
+    }
+  }
+
+  // ---------- 반딧불이 ----------
+  let flies = [];
+  function spawn() {
+    const N = clamp(Math.round((W * H) / 14000), 25, 70);
+    flies = Array.from({ length: N }, () => ({
+      x: rand(0, W), y: rand(H * 0.12, H * 0.92), z: rand(0.35, 1),   // z: 가까울수록 1 (크고 밝고 빠름)
+      vx: 0, vy: 0, nx: rand(0, 100), ny: rand(0, 100),
+      phase: Math.random(), hz: rand(0.32, 0.6),
+      on: 0, wake: 0, flick: 0, th: 0,
+    }));
+    // 깨어나는 순서: 화면 아래(풀숲)에 가까운 것부터 대체로 먼저. 처음 셋은 처음부터 켜짐
+    const order = flies.map((f, i) => ({ i, key: (1 - f.y / H) * 0.6 + Math.random() * 0.4 })).sort((a, b) => a.key - b.key);
+    order.forEach((o, rank) => { flies[o.i].th = rank < 3 ? -1 : (rank - 3) / (order.length - 3) * 0.92; });
+    for (const f of flies) if (f.th < 0) f.on = f.wake = 1;
+  }
+
+  function resize() {
+    W = innerWidth; H = innerHeight; dpr = devicePixelRatio || 1; U = Math.min(W, H);
+    cv.width = Math.max(1, Math.round(W * dpr)); cv.height = Math.max(1, Math.round(H * dpr));
+    paintBg();
+    if (!flies.length) spawn();
+    for (const f of flies) { f.x = clamp(f.x, 0, W); f.y = clamp(f.y, H * 0.1, H * 0.95); }
+  }
+  addEventListener('resize', resize); resize();
+
+  // 밝기 곡선: 천천히 차오름 → 짧게 번쩍 → 천천히 꺼짐 → 쉼
+  function brightness(p) {
+    if (p < 0.5) return 0.04;
+    if (p < 0.62) return lerp(0.04, 0.3, (p - 0.5) / 0.12);
+    if (p < 0.68) return lerp(0.3, 1, (p - 0.62) / 0.06);
+    if (p < 0.92) return lerp(1, 0.04, Math.pow((p - 0.68) / 0.24, 0.6));
+    return 0.04;
+  }
+
+  let lastScroll = scrollY, scrollV = 0, last = null;
+  function frame(now) {
+    const dt = last == null ? 0 : Math.max(0, Math.min(0.05, (now - last) / 1000));
+    last = now;
+    const maxScroll = Math.max(1, document.documentElement.scrollHeight - innerHeight);
+    const prog = clamp(scrollY / maxScroll, 0, 1);
+    const dy = scrollY - lastScroll; lastScroll = scrollY;
+    scrollV = lerp(scrollV, dt > 0 ? dy / dt : 0, 0.2);
+    const stir = clamp(Math.abs(scrollV) / 1500, 0, 1);            // 빠른 스크롤 = 공기 흔들림
+    const K = smooth(0.82, 1, prog) * 2.2;                            // 끝에 가까울수록 박자 맞추는 힘
+
+    let lit = 0;
+    // 쿠라모토 결합: 켜진 이웃들의 위상 쪽으로 조금씩 당김
+    const sx = flies.reduce((s, f) => s + f.on * Math.cos(TAU * f.phase), 0);
+    const sy = flies.reduce((s, f) => s + f.on * Math.sin(TAU * f.phase), 0);
+    const nOn = Math.max(1, flies.reduce((s, f) => s + f.on, 0));
+    const R = Math.hypot(sx, sy) / nOn, psi = Math.atan2(sy, sx);    // R: 박자가 맞은 정도 0~1
+
+    for (const f of flies) {
+      const want = f.th < prog ? 1 : 0;
+      if (want && f.wake < 1) { f.wake = Math.min(1, f.wake + dt / 0.9); f.flick = 1; }
+      if (!want) f.wake = Math.max(0, f.wake - dt / 0.8);
+      // 깨어나는 동안엔 희미하게 두어 번 깜빡임, 잠들 땐 서서히 꺼짐
+      const waking = want && f.wake < 1 ? (0.25 + 0.75 * Math.max(0, Math.sin(f.wake * Math.PI * 4.5))) * f.wake * 0.5 : 0;
+      f.on = want ? (f.wake >= 1 ? 1 : waking) : f.wake * 0.6;
+      if (f.on > 0.05) lit++;
+
+      // 위상: 자기 박자 + 끝부분에선 무리 쪽으로 당김
+      f.phase += dt * (f.hz + K * R * Math.sin(psi - TAU * f.phase) / TAU * 2);
+      f.phase -= Math.floor(f.phase);
+
+      // 떠다니기: 부드러운 노이즈 + 스크롤이 빠르면 휘청 + 먼 것은 시차
+      f.nx += dt * 0.4; f.ny += dt * 0.35;
+      const ax = Math.sin(f.nx * 1.7 + Math.cos(f.ny * 0.9)) * 14 * f.z, ay = Math.cos(f.ny * 1.3 + Math.sin(f.nx * 0.7)) * 10 * f.z - 2;
+      f.vx = lerp(f.vx, ax + rand(-1, 1) * 60 * stir, Math.min(1, dt * 2));
+      f.vy = lerp(f.vy, ay + rand(-1, 1) * 60 * stir, Math.min(1, dt * 2));
+      f.x += f.vx * dt; f.y += f.vy * dt - dy * (1 - f.z) * 0.35;
+      if (f.x < -20) f.x += W + 40; if (f.x > W + 20) f.x -= W + 40;
+      if (f.y < H * 0.06) f.vy += 30 * dt * 10; if (f.y > H * 0.96) f.vy -= 30 * dt * 10;
+      f.y = clamp(f.y, -20, H + 20);
+    }
+
+    // 그리기
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(bg, 0, 0);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.globalCompositeOperation = 'lighter';
+    const order = flies.slice().sort((a, b) => a.z - b.z);
+    for (const f of order) {
+      const b = (f.wake >= 1 && f.th < prog ? brightness(f.phase) : 0.55) * f.on;
+      if (b < 0.01) continue;
+      const r = (10 + 28 * b) * f.z * clamp(U / 600, 0.7, 1.6);
+      ctx.globalAlpha = clamp(b * (0.45 + 0.55 * f.z), 0, 1);
+      ctx.drawImage(glow, f.x - r, f.y - r, r * 2, r * 2);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    for (const f of order) {   // 몸통: 꺼져 있어도 아주 희미하게 보임
+      if (f.on < 0.02) continue;
+      ctx.globalAlpha = 0.5 * f.z * Math.min(1, f.on * 2);
+      ctx.fillStyle = '#1b2016';
+      ctx.beginPath(); ctx.ellipse(f.x, f.y, 1.6 * f.z, 1.1 * f.z, Math.atan2(f.vy, f.vx), 0, TAU); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    readEl.textContent = `깨어난 반딧불이 ${String(lit).padStart(2)} / ${flies.length}\n박자 맞음 ${String(Math.round(R * 100)).padStart(3)} %`;
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
