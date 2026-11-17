@@ -246,9 +246,12 @@
     apex = Math.min(apex, groundY - B * 1.1);
     const m = B * 0.85, room = g.dir > 0 ? W - m - g.x : g.x - m;
     if (room < Math.max(B * 1.3, D * 0.55)) { g.mode = 'turn'; g.t = 0; g.turned = false; g.turnFrom = g.dir; return; }
-    D = Math.min(D, room);
-    const vh = Math.sqrt(2 * GRAV * apex), T = 2 * vh / GRAV;
-    g.plan = { vx: g.dir * D / T, vh, T, th: Math.atan2(vh, D / T) };
+    D = Math.min(D, room - 0.1 * B);
+    // 실제로 가는 거리 = 이륙(TL) 중 반 + 공중(이륙 끝 높이 → 발 닿는 높이) + 착지 뒤 미끄러짐. 이걸로 나눠야 딱 D 만큼 감
+    const vh = Math.sqrt(2 * GRAV * apex), h1 = HC * B + vh * TL / 2;
+    const T = (vh + Math.sqrt(vh * vh + 2 * GRAV * Math.max(0, h1 - HT * B))) / GRAV;
+    const vx = (D + 0.045 * B) / (TL / 2 + T + 0.55 / 26);
+    g.plan = { vx: g.dir * vx, vh, T, th: Math.atan2(vh, vx) };
     g.c0 = { x: g.x, h: g.h, rot: g.rot };
     g.mode = 'crouch'; g.t = 0; g.dur = small ? 0.22 : rand(0.32, 0.4);
   }
@@ -292,7 +295,7 @@
       // 폭발: 뒷발은 땅에 둔 채 몸만 쏘아 올림 → IK 가 다리를 쭉 펴 줌
       const u = Math.min(1, g.t / TL);
       g.x += g.plan.vx * u * dt; g.h += g.plan.vh * u * dt;
-      g.rot = damp(g.rot, -g.plan.th * 0.75, 45, dt);
+      g.rot = damp(g.rot, -g.plan.th * 0.75, 24, dt);   // 빠르지만 한 프레임에 꺾이진 않게
       antGoal = -0.8; wingGoal = 1;
       if (g.t >= TL) {
         g.mode = 'air'; g.t = 0; g.vx = g.plan.vx; g.vh = g.plan.vh;

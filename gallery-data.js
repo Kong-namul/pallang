@@ -152,6 +152,8 @@ window.GALLERY = {
       hint: "바람이 불 때만 한 발씩 움직이고, 먹잇감이 두리번거리면 얼음이 돼요. 화면을 누르면 먹잇감이 두리번거려요." },
     { tab: "mantis", file: 'examples/mantis/03-touch-threat.html', title: "손대면 위협 자세", situation: "터치하면 몸을 세우고 날개를 펼치는 반응 (옆모습)", tech: ["JS", "Canvas"], touch: true,
       hint: "가까이 가면 흔들림을 멈추고 노려봐요. 누르면 0.3초 만에 일어서며 앞다리를 번쩍 들고 날개를 부채처럼 펼쳐요. 앞에서 또 누르면 그쪽으로 찔러요." },
+    { tab: "grasshopper", file: 'examples/grasshopper/01-jump.html', title: "웅크렸다 점프", situation: "준비 동작이 있는 도약 연출 (옆모습)", tech: ["JS", "Canvas"],
+      hint: "0.35초 동안 웅크려 뒷다리 무릎을 높이 접었다가, 3프레임 만에 다리를 쭉 펴며 튀어 올라요. 착지 땐 눌렸다 되튀고 발을 하나씩 고쳐 디뎌요. 누르면 바로 뛰어요." },
     /*__MORE_EX__*/
   ],
 
