@@ -12,6 +12,7 @@ window.GALLERY = {
     { id: 'beetle', name: '풍뎅이', blurb: '딱지날개, 여섯 다리, 무겁고 서툰 비행.' },
     { id: 'ladybug', name: '무당벌레', blurb: '종종걸음으로 꼭대기까지 올라가 딱지를 열고 날아올라요.' },
     { id: 'grasshopper', name: '메뚜기', blurb: '웅크렸다가 폭발하듯 뛰는 점프. 준비 동작이 전부예요.' },
+    { id: 'cicada', name: '매미', blurb: '울 땐 배가 떨리고, 놀라면 "찍" 하고 확 날아가요. 허물 벗는 장면까지.' },
     { id: 'mantis', name: '사마귀', blurb: '바람에 흔들리는 잎처럼 흔들리다가, 한순간에 낚아채요.' },
     { id: 'ant', name: '개미', blurb: '줄지어 오가고, 먹이를 찾아 나르는 무리 움직임.' },
     { id: 'strider', name: '소금쟁이', blurb: '한 번 젓고 길게 미끄러지는 수면 스케이팅과 물결.' },
@@ -158,6 +159,12 @@ window.GALLERY = {
       hint: "가까이 가면 몸을 낮추고 더듬이를 손 쪽으로 돌려요. 더 다가가면 뛸 방향으로 몸을 돌리며 웅크렸다 반대쪽으로 폴짝. 뜨는 높이는 몸이 커지고 그림자가 떨어지는 걸로 보여요. 한 마리가 뛰면 옆 친구가 조금 늦게 따라 뛰어요." },
     { tab: "grasshopper", file: 'examples/grasshopper/03-touch-jump.html', title: "손대면 튀기 (탑뷰)", situation: "커서·손가락에 반응하는 마스코트, 탑뷰 화면", tech: ["JS", "Canvas"], touch: true,
       hint: "다가가면 더듬이가 손 쪽으로 돌고, 가까울수록 깊이 웅크리며 미세하게 떨어요. 건드리면 손 반대쪽으로 튀고, 빠르게 다가갈수록 멀리 뛰어요. 휙 다가가면 닿기 전에 먼저 뛰고, 착지하면 손이 있던 쪽을 옆눈으로 봐요." },
+    { tab: "cicada", file: 'examples/cicada/01-sing.html', title: "나무에 붙어 울기", situation: "여름 테마 배경, 소리·음악 연출", tech: ["JS", "Canvas"], touch: true,
+      hint: "울음 한 번이 조용 → 점점 빨라짐 → 쭉 → 잦아듦으로 흘러가고, 배가 그 박자로 떨리며 소리 물결이 양옆으로 퍼져요. 두 마리가 번갈아 울고, 조용할 땐 줄기를 몇 걸음 올라가요. 가까이 가면 울음을 뚝 그쳐요." },
+    { tab: "cicada", file: 'examples/cicada/02-touch-fly.html', title: "건드리면 확 날아가기", situation: "터치하면 날아가는 인터랙션", tech: ["JS", "Canvas"], touch: true,
+      hint: "건드리면 \"찍\" 소리 물결과 함께 0.1초 만에 날개를 펴고, 날개 잔상을 남기며 툭툭 튀듯 날아가요. 잠시 뒤 새 매미가 날아와 줄기에 툭 부딪혀 앉고, 날개를 두 번에 나눠 접은 뒤 위를 보고 다시 울어요." },
+    { tab: "cicada", file: 'examples/cicada/03-molt.html', title: "허물 벗고 나오기", situation: "변화·성장·완성 순간 연출, 인트로", tech: ["JS", "Canvas"],
+      hint: "등이 갈라지고 흰 몸이 쭉쭉 밀며 나와서 껍질 위로 올라서요. 쭈글쭈글한 날개가 펴지고 몸 색이 짙어진 뒤 첫 비행. 나오는 몸은 껍질 틈으로만 보이게 잘라 그렸어요. 누르면 다음 단계로 넘어가요." },
     /*__MORE_EX__*/
   ],
 
@@ -243,6 +250,10 @@ window.GALLERY = {
       { name: "shaurya-cd/mosquito-animation", url: "https://github.com/shaurya-cd/mosquito-animation", kind: "GitHub", license: "없음", note: "모기 움직임을 흉내 낸 JS" },
       { name: "The Nature of Code · Autonomous Agents", url: "https://natureofcode.com/autonomous-agents/", kind: "글", license: "", note: "배회·조향으로 불규칙한 비행 만들기" },
       { name: "LottieFiles 무료 파리", url: "https://lottiefiles.com/free-animations/flies", kind: "Lottie", license: "", note: "파리 반복 애니메이션 참고" },
+    ],
+    cicada: [
+      { name: "LottieFiles · Cicada Origami", url: "https://lottiefiles.com/de/free-animations/cicada-origami", kind: "Lottie", license: "", note: "종이접기풍 매미 Lottie. 매미 전용 웹 예제는 거의 없어요" },
+      { name: "mithi/hexapod", url: "https://github.com/mithi/hexapod", kind: "GitHub", license: "Apache-2.0", note: "줄기를 기어오를 때 쓴 삼각 보행 참고" },
     ],
     /*__MORE_REFS__*/
   },

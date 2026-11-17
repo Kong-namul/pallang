@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>매미 02 · 건드리면 확 날아가기</title>
+<!-- 줄기에서 울던 매미를 건드리면: "찍!" 소리 물결과 함께 날개를 확 펴고(0.1초) 손 반대쪽으로 빠르게 날아감.
+     날 땐 날개 잔상 + 박자마다 툭툭 튀는 서툰 비행, 줄기에서 멀어질수록 커지고 그림자가 멀어짐.
+     잠시 뒤 새 매미가 날아와 줄기에 "툭" 부딪히듯 내려앉고, 날개를 두어 번 고쳐 접은 뒤 위를 보고 다시 울기 시작.
+     가만히 둬도 가끔 혼자 날아갔다 다른 매미가 와요. -->
+<link rel="stylesheet" href="../../assets/base.css">
+<style> .stage { touch-action: none; cursor: pointer; } </style>
+</head>
+<body>
+<div class="stage"><canvas class="fill" id="cv"></canvas></div>
+<p class="hint">매미를 <b>톡</b> 건드려 보세요 · 가까이 가면 울음을 그쳐요</p>
+
+<script src="../../assets/cicada.js"></script>
+<script>
+(() => {
+  'use strict';
+  const { drawCicada, paintTrunkScene, loop, clamp, lerp, rand, easeOut, easeInOut, angDiff, TAU } = CI;
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  const bg = document.createElement('canvas');
+  let W, H, S, dpr, trunk;
+
+  function resize() {
+    W = innerWidth; H = innerHeight; dpr = devicePixelRatio || 1;
+    S = clamp(Math.min(W, H) / 320, 0.8, 2.4);
+    cv.width = Math.max(1, Math.round(W * dpr)); cv.height = Math.max(1, Math.round(H * dpr));
+    bg.width = cv.width; bg.height = cv.height;
+    const g = bg.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    trunk = paintTrunkScene(g, W, H, S);
+  }
+  addEventListener('resize', resize); resize();
+
+  const UP = -Math.PI / 2;
+  const spot = () => ({ x: lerp(trunk.x0, trunk.x1, rand(0.3, 0.7)), y: rand(0.22, 0.78) * H });
+
+  function makeSitting(x, y) {
+    return { state: 'sit', t: 0, x, y, a: UP + rand(-0.12, 0.12), z: 0, open: 0, legs: 0, flap: 0, blur: 0, beat: 0, side: 0,
+             amp: 0, rate: 8, pp: 0, singIn: rand(0.5, 2), singFor: 0, ringT: 0, rings: [], freeze: 0, idle: 0, jx: 0, jy: 0 };
+  }
+  const bugs = [makeSitting(lerp(trunk.x0, trunk.x1, 0.4), H * 0.35), makeSitting(lerp(trunk.x0, trunk.x1, 0.62), H * 0.66)];
+  bugs[1].singIn = 3;
+
+  // ---------- 포인터 ----------
+  const ptr = { x: 0, y: 0, px: 0, py: 0, on: false, down: false, speed: 0 };
+  const place = (e) => { if (!ptr.on) { ptr.px = e.clientX; ptr.py = e.clientY; } Object.assign(ptr, { x: e.clientX, y: e.clientY, on: true }); };
+  cv.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse' || ptr.down) place(e); });
+  cv.addEventListener('pointerdown', (e) => {
+    place(e); ptr.down = true;
+    for (const b of bugs) if (b.state === 'sit' && Math.hypot(b.x - ptr.x, b.y - ptr.y) < 34 * S) startle(b, ptr.x, ptr.y, 1);
+  });
+  addEventListener('pointerup', (e) => { ptr.down = false; if (e.pointerType !== 'mouse') ptr.on = false; });
+  cv.addEventListener('pointerleave', () => { ptr.on = false; ptr.down = false; });
+
+  // ---------- 상태 ----------
+  function startle(b, fx, fy, power) {
+    b.state = 'flick'; b.t = 0;
+    b.squawk = power;                                    // "찍!" 소리 물결
+    for (let i = 0; i < 4; i++) b.rings.push({ r: (8 + i * 10) * S, a: 1, burst: true });
+    const away = Math.atan2(b.y - fy, b.x - fx);
+    b.vdir = away + rand(-0.4, 0.4);
+    b.v = 0; b.vmax = rand(380, 460) * S;
+  }
+
+  function newcomer() {
+    const side = Math.random() < 0.5 ? -1 : 1;
+    const target = spot();
+    const b = makeSitting(side < 0 ? -60 * S : W + 60 * S, rand(0.1, 0.9) * H);
+    Object.assign(b, { state: 'approach', tx: target.x, ty: target.y, z: 70 * S, open: 1, legs: 1, blur: 1, v: 300 * S });
+    b.a = Math.atan2(target.y - b.y, target.x - b.x);
+    b.vdir = b.a;
+    return b;
+  }
+
+  function sing(b, dt) {
+    const d = ptr.on ? Math.hypot(ptr.x - b.x, ptr.y - b.y) : 1e9;
+    b.freeze = d < 95 * S ? Math.min(1, b.freeze + dt * 6) : Math.max(0, b.freeze - dt * 0.6);
+    let target = 0;
+    if (b.freeze < 0.1) {
+      if (b.singFor > 0) {
+        b.singFor -= dt;
+        const k = clamp(1 - b.singFor / b.singLen, 0, 1);
+        target = k < 0.3 ? k / 0.3 : k > 0.85 ? (1 - k) / 0.15 : 1;   // 점점 커졌다 잦아듦
+        b.rate = k < 0.3 ? lerp(6, 21, k / 0.3) : 21;
+      } else if ((b.singIn -= dt) <= 0) {
+        b.singLen = b.singFor = rand(3, 5); b.singIn = rand(2.5, 5);
+      }
+    }
+    b.amp = lerp(b.amp, target, Math.min(1, dt * (b.freeze > 0.3 ? 14 : 6)));
+    b.pp += dt * b.rate * TAU;
+    b.pulse = b.amp * (0.5 + 0.5 * Math.sin(b.pp));
+    b.jx = (Math.random() - 0.5) * b.amp * 0.5 * S; b.jy = (Math.random() - 0.5) * b.amp * 0.5 * S;
+    b.legs = lerp(b.legs, b.freeze * 0.35, Math.min(1, dt * 8));
+    if (b.amp > 0.15 && (b.ringT -= dt) <= 0) { b.ringT = 1 / (3 + b.amp * 4); b.rings.push({ r: 8 * S, a: b.amp }); }
+  }
+
+  function steer(b, dt, wantDir, turnRate) {
+    b.vdir += clamp(angDiff(b.vdir, wantDir), -turnRate * dt, turnRate * dt);
+    b.a += clamp(angDiff(b.a, b.vdir), -12 * dt, 12 * dt);   // 몸은 진행 방향을 조금 늦게 따라감
+  }
+
+  let autoT = rand(9, 13), respawnT = -1;
+
+  function update(b, dt) {
+    b.t += dt;
+    if (b.state === 'sit') {
+      sing(b, dt);
+      b.open = lerp(b.open, 0, Math.min(1, dt * 10)); b.blur = 0;
+      b.a += angDiff(b.a, UP + Math.sin(b.t * 0.4) * 0.08) * Math.min(1, dt * 2);
+      const d = ptr.on ? Math.hypot(ptr.x - b.x, ptr.y - b.y) : 1e9;
+      if (d < 20 * S && ptr.speed > 250) startle(b, ptr.x, ptr.y, 1);   // 휙 스치면 놀람
+    } else if (b.state === 'flick') {
+      // 날개를 확 펴고 몸이 들림 (0.1초)
+      const k = Math.min(1, b.t / 0.1);
+      b.open = easeOut(k); b.legs = k; b.amp = 0; b.pulse = 0;
+      b.z = 6 * S * k; b.blur = k;
+      if (k >= 1) { b.state = 'fly'; b.t = 0; b.beat = 0; b.side = 0; }
+    } else if (b.state === 'fly' || b.state === 'approach') {
+      b.flap += dt * 13 * TAU;
+      // 박자마다 옆으로 툭 (서툰 비행)
+      if ((b.beat -= dt) <= 0) { b.beat = rand(0.07, 0.13); b.side = rand(-1, 1) * 70 * S; }
+      b.side *= Math.exp(-dt * 8);
+      let want = b.vdir;
+      if (b.state === 'fly') {
+        b.v = Math.min(b.vmax, b.v + dt * 900 * S);
+        want = b.vdir + Math.sin(b.t * 2.3) * 0.5;
+        b.z = Math.min(70 * S, b.z + dt * 160 * S);
+        steer(b, dt, want, 2.5);
+        if (b.x < -80 * S || b.x > W + 80 * S || b.y < -80 * S || b.y > H + 80 * S) { b.gone = true; }
+      } else {
+        const dx = b.tx - b.x, dy = b.ty - b.y, d = Math.hypot(dx, dy);
+        want = Math.atan2(dy, dx);
+        b.v = clamp(d * 3, 60 * S, 320 * S);                     // 가까워질수록 느려짐
+        b.z = Math.min(70 * S, d * 0.35);                         // 가까워질수록 줄기에 가까워짐
+        if (d < 40 * S) {                                         // 마지막 구간은 곧장 들어감 (맴돌기 방지)
+          b.vdir = want; b.side *= 0.5;
+          b.a += clamp(angDiff(b.a, want), -12 * dt, 12 * dt);
+        } else steer(b, dt, want, d < 120 * S ? 7 : 3.5);
+        if (d < Math.max(6 * S, b.v * dt * 1.2)) { b.state = 'land'; b.t = 0; b.lx = b.x; b.ly = b.y; b.la = b.a; b.bump = b.vdir; }
+      }
+      const c = Math.cos(b.vdir), s = Math.sin(b.vdir);
+      b.x += (c * b.v - s * b.side) * dt;
+      b.y += (s * b.v + c * b.side) * dt;
+      b.open = 1; b.blur = 1; b.legs = 1;
+    } else if (b.state === 'land') {
+      // 줄기에 툭 부딪혀 살짝 튕겼다 붙음 → 날개를 두 번에 나눠 접음 → 위를 보도록 돌아섬
+      const t = b.t;
+      const bounce = Math.exp(-t * 9) * Math.sin(t * 22) * 5 * S;
+      b.x = b.lx + Math.cos(b.bump) * bounce; b.y = b.ly + Math.sin(b.bump) * bounce;
+      b.z = Math.max(0, 6 * S * (1 - t / 0.15));
+      b.blur = Math.max(0, 1 - t / 0.12);
+      b.open = t < 0.35 ? lerp(1, 0.35, easeOut(t / 0.35)) : t < 0.55 ? 0.35 : lerp(0.35, 0, easeOut(Math.min(1, (t - 0.55) / 0.3)));
+      b.legs = Math.max(0, 1 - t / 0.25);
+      const turnK = clamp((t - 0.3) / 0.7, 0, 1);
+      b.a = b.la + angDiff(b.la, UP) * easeInOut(turnK);
+      if (t > 1.2) { b.state = 'sit'; b.t = 0; b.singIn = rand(1.5, 3); b.open = 0; b.blur = 0; }
+    }
+    for (const r of b.rings) r.r += dt * (r.burst ? 260 : 70 + 40 * r.a) * S;
+    while (b.rings.length && b.rings[0].r > 140 * S) b.rings.shift();
+  }
+
+  loop((dt) => {
+    ptr.speed = lerp(ptr.speed, dt > 0 ? Math.hypot(ptr.x - ptr.px, ptr.y - ptr.py) / dt : 0, 0.3);
+    ptr.px = ptr.x; ptr.py = ptr.y;
+
+    // 가만히 둬도 가끔 혼자 날아감
+    if ((autoT -= dt) <= 0) {
+      autoT = rand(9, 13);
+      const sitting = bugs.filter((b) => b.state === 'sit' && b.amp < 0.1);
+      if (sitting.length) { const b = sitting[Math.floor(Math.random() * sitting.length)]; startle(b, b.x + rand(-30, 30) * S, b.y + 60 * S, 0.6); }
+    }
+    for (const b of bugs) update(b, dt);
+    // 날아간 매미는 빼고, 잠시 뒤 새 매미가 날아옴
+    for (let i = bugs.length - 1; i >= 0; i--) if (bugs[i].gone) { bugs.splice(i, 1); respawnT = rand(1.2, 2.5); }
+    if (respawnT > 0 && (respawnT -= dt) <= 0 && bugs.length < 2) bugs.push(newcomer());
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(bg, 0, 0);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    // 그림자: 줄기에서 멀어질수록 오른쪽 아래로 밀리고 옅어짐
+    for (const b of bugs) {
+      const zz = b.z / S;
+      ctx.save(); ctx.translate(b.x + 1.5 * S + b.z * 0.5, b.y + 2.5 * S + b.z * 0.75); ctx.rotate(b.a); ctx.scale(S * (1 + zz / 120), S * (1 + zz / 120));
+      ctx.fillStyle = `rgba(20,12,4,${(0.35 * (1 - clamp(zz / 90, 0, 0.8))).toFixed(3)})`;
+      ctx.beginPath(); ctx.ellipse(-10, 0, 34 + b.open * 12, 12 + b.open * 22, 0, 0, TAU); ctx.fill();
+      ctx.restore();
+    }
+    const order = bugs.slice().sort((a, b) => a.z - b.z);
+    for (const b of order) {
+      const sc = S * (1 + b.z / S / 140);   // 줄기에서 멀어질수록(카메라 쪽) 커짐
+      ctx.save(); ctx.translate(b.x + (b.jx || 0), b.y + (b.jy || 0)); ctx.rotate(b.a); ctx.scale(sc, sc);
+      drawCicada(ctx, { pulse: b.pulse || 0, legs: b.legs, open: b.open, flap: b.flap, blur: b.blur });
+      ctx.restore();
+      const ax = b.x + Math.cos(b.a) * -15 * S, ay = b.y + Math.sin(b.a) * -15 * S;
+      for (const r of b.rings) {
+        const fade = 1 - r.r / (140 * S);
+        ctx.strokeStyle = `rgba(255,248,228,${((r.burst ? 0.8 : 0.55) * r.a * fade).toFixed(3)})`;
+        ctx.lineWidth = (r.burst ? 2.4 : 1.8) * S * fade;
+        if (r.burst) { ctx.beginPath(); ctx.arc(ax, ay, r.r, 0, TAU); ctx.stroke(); continue; }
+        for (const side of [-1, 1]) {
+          const mid = b.a + side * Math.PI / 2;
+          ctx.beginPath(); ctx.arc(ax, ay, r.r, mid - 0.6, mid + 0.6); ctx.stroke();
+        }
+      }
+    }
+  });
+})();
+</script>
+</body>
+</html>

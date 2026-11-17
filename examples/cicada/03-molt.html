@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>매미 03 · 허물 벗고 나오기</title>
+<!-- 실제로는 한두 시간 걸리는 날개돋이를 20초 남짓으로 줄였어요. 나무줄기를 정면에서 봄.
+     껍질 → 등이 갈라짐 → 흰 몸이 밀고 나옴(쭉쭉 밀어내는 박자) → 껍질 위로 올라섬
+     → 쭈글쭈글한 날개가 펴짐 → 몸 색이 짙어지고 날개가 투명해짐 → 첫 비행.
+     나오는 몸은 껍질의 갈라진 틈으로만 보이게 잘라서(clip) 그려요. 화면을 누르면 다음 단계로. -->
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  .stage { touch-action: none; cursor: pointer; }
+  .steps { position: fixed; top: 10px; left: 0; right: 0; display: flex; justify-content: center; flex-wrap: wrap; gap: 4px; font-size: 11.5px; padding: 0 8px; pointer-events: none; }
+  .steps span { padding: 3px 9px; border-radius: 999px; color: var(--muted); background: color-mix(in srgb, var(--sky-top) 70%, transparent); transition: background .3s, color .3s; }
+  .steps span.on { background: var(--accent); color: #fff; }
+</style>
+</head>
+<body>
+<div class="stage"><canvas class="fill" id="cv"></canvas></div>
+<div class="steps" id="steps"><span>껍질</span><span>등이 갈라짐</span><span>몸이 나옴</span><span>올라섬</span><span>날개 펴짐</span><span>색이 짙어짐</span><span>첫 비행</span></div>
+<p class="hint">한두 시간 걸리는 일을 <b>20초</b>로 · 누르면 다음 단계</p>
+<div class="ui"><label for="speed">속도</label><input type="range" id="speed" min="1" max="4" step="0.5" value="1"><button type="button" id="again">다시</button></div>
+
+<script src="../../assets/cicada.js"></script>
+<script>
+(() => {
+  'use strict';
+  const { drawCicada, drawShell, paintTrunkScene, loop, clamp, lerp, rand, easeOut, easeInOut, TAU } = CI;
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  const bg = document.createElement('canvas');
+  const steps = [...document.querySelectorAll('#steps span')];
+  const speedEl = document.getElementById('speed');
+  let W, H, S, dpr, trunk;
+
+  function resize() {
+    W = innerWidth; H = innerHeight; dpr = devicePixelRatio || 1;
+    S = clamp(Math.min(W, H) / 230, 0.9, 3.2);
+    cv.width = Math.max(1, Math.round(W * dpr)); cv.height = Math.max(1, Math.round(H * dpr));
+    bg.width = cv.width; bg.height = cv.height;
+    const g = bg.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    trunk = paintTrunkScene(g, W, H, S);
+  }
+  addEventListener('resize', resize); resize();
+
+  const UP = -Math.PI / 2;
+  // 단계별 길이(초, 1배속)
+  const DUR = [1.2, 1.2, 4.0, 2.5, 4.0, 3.5, 1.8, 0.9];
+  let phase = 0, t = 0;
+  const m = { off: -10, legs: 1, wing: 0.25, age: 0, split: 0, open: 0, blur: 0, flap: 0, x: 0, y: 0, z: 0, a: UP, shellAlpha: 0 };
+
+  function setPhase(p) {
+    phase = p; t = 0;
+    steps.forEach((s, i) => s.classList.toggle('on', i === Math.min(p, 6)));
+    if (p === 6) { m.fx = 0; m.fy = 0; m.fdir = UP + rand(-0.9, 0.9); m.v = 0; m.beat = 0; m.side = 0; }
+  }
+  function restart() { Object.assign(m, { off: -10, legs: 1, wing: 0.25, age: 0, split: 0, open: 0, blur: 0, z: 0, a: UP, shellAlpha: 0 }); setPhase(0); }
+  document.getElementById('again').addEventListener('click', (e) => { e.stopPropagation(); restart(); });
+  cv.addEventListener('pointerdown', () => { if (phase < 6) setPhase(phase + 1); });
+  restart();
+
+  loop((dtReal) => {
+    const dt = dtReal * +speedEl.value;
+    t += dt;
+    const k = Math.min(1, t / DUR[phase]);
+    const sx = (trunk.x0 + trunk.x1) / 2, sy = H * 0.64;   // 껍질 위치
+
+    m.shellAlpha = phase === 7 ? 1 - k : Math.min(1, m.shellAlpha + dt * 2);
+    if (phase === 0) {
+      m.split = 0; m.off = -10;
+    } else if (phase === 1) {
+      m.split = easeOut(k);
+    } else if (phase === 2) {
+      // 쭉, 쭉 밀어내는 박자: 전진이 계단처럼 (밀기 4번)
+      const pushes = 4, q = k * pushes, i = Math.floor(q), f = q - i;
+      const e = (i + easeOut(Math.min(1, f * 1.6))) / pushes;
+      m.off = lerp(-10, 18, Math.min(1, e));
+      m.a = UP + Math.sin(t * 1.6) * 0.05;                  // 빠져나오며 살짝 흔들
+      m.legs = 1;
+    } else if (phase === 3) {
+      m.off = lerp(18, 48, easeInOut(k));
+      m.legs = 1 - easeOut(k);                              // 다리를 펴서 껍질을 붙잡음
+      m.a = UP + Math.sin(t * 1.6) * 0.05 * (1 - k);
+    } else if (phase === 4) {
+      m.off = 48; m.legs = 0;
+      m.wing = lerp(0.25, 1, easeInOut(k));
+      m.tremble = Math.sin(t * 40) * 0.6 * (1 - k);         // 펴지는 동안 날개가 파르르
+    } else if (phase === 5) {
+      m.wing = 1; m.tremble = 0;
+      m.age = easeInOut(k);
+    } else if (phase === 6) {
+      // 첫 비행: 날개를 확 펴고 위로, 줄기에서 멀어지며 커짐
+      m.age = 1;
+      m.open = Math.min(1, t / 0.1); m.blur = m.open; m.legs = m.open;
+      m.flap += dt * 13 * TAU;
+      m.v = Math.min(380 * S, m.v + dt * 900 * S);
+      if ((m.beat -= dt) <= 0) { m.beat = rand(0.07, 0.13); m.side = rand(-1, 1) * 60 * S; }
+      m.side *= Math.exp(-dt * 8);
+      const c = Math.cos(m.fdir), s = Math.sin(m.fdir);
+      m.fx += (c * m.v - s * m.side) * dt; m.fy += (s * m.v + c * m.side) * dt;
+      m.a += (Math.atan2(s, c) - m.a) * Math.min(1, dt * 8);
+      m.z = Math.min(70 * S, m.z + dt * 180 * S);
+    }
+    if (k >= 1 && phase < 7) setPhase(phase + 1);
+    else if (k >= 1 && phase === 7) restart();
+
+    // ---------- 그리기 ----------
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(bg, 0, 0);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    // 껍질 그림자 + 껍질
+    ctx.save(); ctx.globalAlpha = m.shellAlpha;
+    ctx.translate(sx + 1.5 * S, sy + 2.5 * S); ctx.rotate(UP); ctx.scale(S, S);
+    ctx.fillStyle = 'rgba(20,12,4,0.35)'; ctx.beginPath(); ctx.ellipse(-4, 0, 30, 13, 0, 0, TAU); ctx.fill();
+    ctx.restore();
+    ctx.save(); ctx.globalAlpha = m.shellAlpha;
+    ctx.translate(sx, sy); ctx.rotate(UP); ctx.scale(S, S);
+    drawShell(ctx, m.split);
+    ctx.restore();
+
+    if (phase >= 2 && phase <= 7 && !(phase === 7)) {
+      const ax = sx + Math.cos(UP) * m.off * S + (m.fx || 0) * (phase === 6 ? 1 : 0);
+      const ay = sy + Math.sin(UP) * m.off * S + (m.fy || 0) * (phase === 6 ? 1 : 0);
+      const zz = m.z / S;
+      if (phase >= 3) {   // 나온 몸의 그림자 (날면 멀어짐)
+        ctx.save(); ctx.translate(ax + 1.5 * S + m.z * 0.5, ay + 2.5 * S + m.z * 0.75); ctx.rotate(m.a); ctx.scale(S * (1 + zz / 120), S * (1 + zz / 120));
+        ctx.fillStyle = `rgba(20,12,4,${(0.3 * (1 - clamp(zz / 90, 0, 0.8))).toFixed(3)})`;
+        ctx.beginPath(); ctx.ellipse(-10, 0, 32 + m.open * 12, 11 + m.wing * 4 + m.open * 20, 0, 0, TAU); ctx.fill();
+        ctx.restore();
+      }
+      ctx.save();
+      if (phase <= 3) {
+        // 껍질의 갈라진 틈과 머리 위쪽으로만 보이게 자름 (껍질 좌표 기준)
+        ctx.translate(sx, sy); ctx.rotate(UP); ctx.scale(S, S);
+        const w = 3 + m.split * 6;
+        ctx.beginPath();
+        ctx.moveTo(-6, -w); ctx.lineTo(23, -w); ctx.lineTo(23, -400); ctx.lineTo(600, -400);
+        ctx.lineTo(600, 400); ctx.lineTo(23, 400); ctx.lineTo(23, w); ctx.lineTo(-6, w); ctx.closePath();
+        ctx.clip();
+        ctx.translate(m.off, 0);
+      } else {
+        const sc = S * (1 + zz / 140);
+        ctx.translate(ax, ay); ctx.rotate(m.a); ctx.scale(sc, sc);
+        if (m.tremble) ctx.translate(0, m.tremble * 0.3);
+      }
+      drawCicada(ctx, { age: m.age, wingSize: m.wing, legs: m.legs, open: m.open, blur: m.blur, flap: m.flap });
+      ctx.restore();
+    }
+  });
+})();
+</script>
+</body>
+</html>
