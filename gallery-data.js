@@ -154,6 +154,8 @@ window.GALLERY = {
       hint: "가까이 가면 흔들림을 멈추고 노려봐요. 누르면 0.3초 만에 일어서며 앞다리를 번쩍 들고 날개를 부채처럼 펼쳐요. 앞에서 또 누르면 그쪽으로 찔러요." },
     { tab: "grasshopper", file: 'examples/grasshopper/01-jump.html', title: "웅크렸다 점프", situation: "준비 동작이 있는 도약 연출 (옆모습)", tech: ["JS", "Canvas"],
       hint: "0.35초 동안 웅크려 뒷다리 무릎을 높이 접었다가, 3프레임 만에 다리를 쭉 펴며 튀어 올라요. 착지 땐 눌렸다 되튀고 발을 하나씩 고쳐 디뎌요. 누르면 바로 뛰어요." },
+    { tab: "grasshopper", file: 'examples/grasshopper/02-hop-chain.html', title: "풀밭 연속 뜀 (탑뷰)", situation: "다가가면 흩어지는 풀밭 배경, 탑뷰 화면", tech: ["JS", "Canvas"], touch: true,
+      hint: "가까이 가면 몸을 낮추고 더듬이를 손 쪽으로 돌려요. 더 다가가면 뛸 방향으로 몸을 돌리며 웅크렸다 반대쪽으로 폴짝. 뜨는 높이는 몸이 커지고 그림자가 떨어지는 걸로 보여요. 한 마리가 뛰면 옆 친구가 조금 늦게 따라 뛰어요." },
     /*__MORE_EX__*/
   ],
 
