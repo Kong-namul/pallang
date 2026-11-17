@@ -167,6 +167,8 @@ window.GALLERY = {
       hint: "등이 갈라지고 흰 몸이 쭉쭉 밀며 나와서 껍질 위로 올라서요. 쭈글쭈글한 날개가 펴지고 몸 색이 짙어진 뒤 첫 비행. 나오는 몸은 껍질 틈으로만 보이게 잘라 그렸어요. 누르면 다음 단계로 넘어가요." },
     { tab: "dragonfly", file: 'examples/dragonfly/05-click-dart.html', title: "클릭한 곳으로 다트", situation: "인터랙티브 랜딩, 클릭 위치 강조", tech: ["JS", "SVG", "3D transform"], touch: true,
       hint: "누른 곳을 0.1초쯤 노려본 뒤 툭 날아가요. 정면이 아니면 고개부터 홱 돌리거나 몸은 그대로 옆으로 미끄러지고, 끝에서 살짝 지나쳤다 제자리. 이동 중에 또 누르면 도착하자마자 다음 곳으로 가요." },
+    { tab: "bee", file: 'examples/bee/04-cursor-follow.html', title: "커서 따라다니기", situation: "포트폴리오, 마우스 트레일, 탑뷰 화면", tech: ["JS", "SVG"], touch: true,
+      hint: "커서 주위를 맴돌며 졸졸 따라와요. 도는 방향과 거리가 몇 초마다 바뀌고, 가끔 코앞까지 와서 살펴본 뒤 물러나요. 빠를 땐 가는 쪽을, 느리게 떠 있을 땐 커서 쪽을 보며 옆으로 미끄러져요." },
     /*__MORE_EX__*/
   ],
 

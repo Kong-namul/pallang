@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  꿀벌 04 · 커서 따라다니기 (탑뷰)
+  커서 위가 아니라 커서 주위를 도는 점을 쫓아감 → 맴돌며 졸졸. 도는 방향·반지름이 몇 초마다 바뀌고,
+  가끔 코앞까지 다가와 살펴본 뒤(높이도 살짝 낮춤) 다시 물러남.
+  따라가기는 스프링(가속도 = 당기는 힘 − 속도 마찰)이라 커서를 휙 움직이면 늦게 따라오며 살짝 지나침.
+  빠를 땐 가는 방향을 보고, 느리게 떠 있을 땐 커서 쪽을 보며 옆으로 미끄러짐. 커서가 없으면 혼자 크게 배회.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>꿀벌 04 · 커서 따라다니기</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style> #stage { touch-action: none; } </style>
+</head>
+<body>
+<div class="stage" id="stage"></div>
+<p class="hint">마우스를 <b>움직여 보세요</b> · 맴돌다 가끔 코앞까지 와서 살펴봐요</p>
+
+<script src="../../assets/bee.js"></script>
+<script>
+  const { makeBee, loop, clamp, lerp, rand, damp, angDiff, RAD, TAU } = BE;
+  const stage = document.getElementById('stage');
+  let W = 0, H = 0, U = 0;
+  const layout = () => { W = stage.clientWidth; H = stage.clientHeight; U = Math.min(W, H); };
+  layout();
+  const beeScale = () => clamp(U / 380, 0.7, 1.5);
+  const bee = makeBee(stage, { x: W * 0.5, y: H * 0.5, alt: 22, fly: 1, scale: beeScale() });
+  addEventListener('resize', () => { layout(); bee.scale = beeScale(); });
+
+  // ---------- 포인터 ----------
+  const ptr = { x: 0, y: 0, on: false, down: false };
+  stage.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse' || ptr.down) Object.assign(ptr, { x: e.clientX, y: e.clientY, on: true }); });
+  stage.addEventListener('pointerdown', (e) => Object.assign(ptr, { x: e.clientX, y: e.clientY, on: true, down: true }));
+  addEventListener('pointerup', (e) => { ptr.down = false; if (e.pointerType !== 'mouse') ptr.on = false; });
+  stage.addEventListener('pointerleave', () => { ptr.on = false; ptr.down = false; });
+
+  // ---------- 움직임 상태 ----------
+  const m = {
+    vx: 0, vy: 0, hd: -Math.PI / 2,       // 속도(px/s), 바라보는 방향(rad)
+    orbitA: 0, orbitDir: 1, orbitW: 2.2,   // 커서 주위 도는 각도·방향·속도
+    radius: 1, radiusGoal: 1, nextSwap: rand(1.2, 3),
+    inspect: 0, nextInspect: rand(2.5, 5),  // 코앞까지 와서 살펴보기
+    wanderT: rand(0, 100), jx: 0, jy: 0, bank: 0,
+  };
+
+  loop((dt) => {
+    const sc = bee.scale, R = 62 * sc;
+    m.wanderT += dt;
+
+    // 1) 목표 지점: 커서 주위를 도는 점 (커서가 없으면 화면을 크게 배회)
+    let tx, ty, look = null;
+    if (ptr.on) {
+      if ((m.nextSwap -= dt) <= 0) {                              // 몇 초마다 도는 방향·반지름이 바뀜
+        m.nextSwap = rand(1.2, 3.2);
+        if (Math.random() < 0.45) m.orbitDir *= -1;
+        m.orbitW = rand(1.6, 3.2);
+        m.radiusGoal = rand(0.75, 1.35);
+      }
+      if ((m.nextInspect -= dt) <= 0) { m.nextInspect = rand(3, 6); m.inspect = 1; }
+      m.inspect = Math.max(0, m.inspect - dt / 0.9);
+      const insp = Math.sin(Math.PI * m.inspect);                 // 0 → 1 → 0
+      m.radius = damp(m.radius, m.radiusGoal, 2, dt);
+      m.orbitA += dt * m.orbitW * m.orbitDir * (1 - 0.6 * insp);
+      const r = R * lerp(m.radius, 0.28, insp) * (1 + 0.12 * Math.sin(m.wanderT * 3.1));
+      tx = ptr.x + Math.cos(m.orbitA) * r;
+      ty = ptr.y + Math.sin(m.orbitA) * r * 0.85;
+      look = { x: ptr.x, y: ptr.y };
+      bee.alt = damp(bee.alt, 22 - 8 * insp + Math.sin(m.wanderT * 2.3) * 3, 4, dt);
+      bee.antenna = damp(bee.antenna, 6 + 10 * insp, 6, dt);    // 살펴볼 때 더듬이를 앞으로 모음
+    } else {
+      const t = m.wanderT;
+      tx = W * 0.5 + Math.cos(t * 0.31) * W * 0.3 + Math.cos(t * 0.83) * W * 0.07;
+      ty = H * 0.5 + Math.sin(t * 0.47) * H * 0.28 + Math.sin(t * 1.1) * H * 0.06;
+      bee.alt = damp(bee.alt, 26 + Math.sin(t * 1.7) * 4, 3, dt);
+      bee.antenna = damp(bee.antenna, 0, 3, dt);
+    }
+
+    // 2) 스프링으로 따라가기: 당기는 힘 − 속도 마찰 (살짝 지나쳤다 돌아옴)
+    const k = ptr.on ? 16 : 6, c = 2 * Math.sqrt(k) * 0.72;
+    const ax = (tx - bee.x) * k - m.vx * c, ay = (ty - bee.y) * k - m.vy * c;
+    m.vx += ax * dt; m.vy += ay * dt;
+    const vmax = 900 * sc, sp = Math.hypot(m.vx, m.vy);
+    if (sp > vmax) { m.vx *= vmax / sp; m.vy *= vmax / sp; }
+    bee.x += m.vx * dt; bee.y += m.vy * dt;
+    bee.x = clamp(bee.x, -40, W + 40); bee.y = clamp(bee.y, -40, H + 40);
+
+    // 3) 방향: 빠르면 가는 쪽, 느리면 커서 쪽을 봄 (옆으로 미끄러지며 쳐다보기)
+    const speed = Math.hypot(m.vx, m.vy);
+    const velDir = Math.atan2(m.vy, m.vx);
+    let want = velDir;
+    if (look && speed < 260 * sc) {
+      const lookDir = Math.atan2(look.y - bee.y, look.x - bee.x);
+      const wLook = clamp(1 - speed / (260 * sc), 0, 1);
+      want = velDir + angDiff(velDir, lookDir) * wLook;
+    }
+    if (speed < 8 && !look) want = m.hd;
+    const turn = clamp(angDiff(m.hd, want), -11 * dt, 11 * dt);   // 한 프레임에 홱 돌지 않게
+    m.hd += turn;
+    bee.heading = m.hd * RAD + 90;
+
+    // 4) 기울기: 옆으로 받는 가속도만큼 안쪽으로
+    const lat = (-Math.sin(m.hd) * ax + Math.cos(m.hd) * ay) / (2600 * sc);
+    m.bank = damp(m.bank, clamp(lat, -1, 1), 8, dt);
+    bee.bank = m.bank;
+
+    // 5) 윙윙 잔떨림 (렌더할 때만 얹음)
+    m.jx = damp(m.jx, rand(-1, 1) * 1.6 * sc, 30, dt);
+    m.jy = damp(m.jy, rand(-1, 1) * 1.6 * sc, 30, dt);
+    bee.fly = 1;
+    bee.update(dt);
+    const bx = bee.x, by = bee.y;
+    bee.x += m.jx; bee.y += m.jy;
+    bee.render();
+    bee.x = bx; bee.y = by;
+  });
+</script>
+</body>
+</html>
