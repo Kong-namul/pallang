@@ -2,6 +2,8 @@
 
 곤충·거미 웹 모션 예제 모음 (CSS / JS / Canvas / SVG / three.js).
 
+갤러리: https://kong-namul.github.io/pallang/
+
 - `index.html` — 탭 갤러리. 로컬에서 보려면 폴더에서 `python3 -m http.server 5178` 실행 후 http://localhost:5178
 - `gallery-data.js` — 갤러리에 보이는 카드와 레퍼런스 사이트 목록
 - `assets/` — 곤충별 그림·공통 동작 코드
@@ -11,7 +13,11 @@
 
 갤러리에 들어간 탭(15개): 나비, 나방, 잠자리, 벌, 파리·모기, 반딧불이, 풍뎅이, 무당벌레, 메뚜기, 매미, 사마귀, 개미, 소금쟁이, 애벌레, 거미. 처음 계획한 예제는 모두 만들었어요.
 
-## Vercel 배포
+## 배포
+
+main 에 push 하면 GitHub Actions(`.github/workflows/pages.yml`)가 `node scripts/build-site.mjs` 로 `dist/` 를 만들어 GitHub Pages 에 올려요.
+
+### Vercel 로 올리고 싶을 때
 
 `vercel.json` 이 들어 있어서 Vercel 에서 이 레포를 가져오기(Import)만 하면 돼요. 빌드는 `node scripts/build-site.mjs` 가 `dist/` 를 만들어요 (갤러리 첫 페이지에 `<!doctype html>` 을 붙이고 나머지 파일은 그대로 복사). main 에 push 할 때마다 자동으로 다시 배포돼요.
 
