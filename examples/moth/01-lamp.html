@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  나방 01 · 불빛 주위 맴돌기
+  나방은 빛을 '몸 옆 일정한 각도(phi)'에 두고 날려고 함 → phi 가 90°보다 작으면 저절로 안쪽으로 감기는 나선이 됨.
+  전등에 부딪히면 튕겨 나가며 phi 가 130°쯤으로 벌어졌다가(바깥으로) 서서히 다시 좁아져 돌아옴.
+  경로엔 구불거림·급회전·박자마다 옆으로 튀는 힘(Flit)이 섞여 궤도가 매번 다름.
+  빛 쪽 날개는 더 밝게(addLight), 그림자는 빛 반대쪽 벽으로 떨어짐. 포인터는 두 번째 불빛.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>나방 01 · 불빛 주위 맴돌기</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<link rel="stylesheet" href="../../assets/moth.css">
+<style>
+  /* 밤 장면: 이 예제만의 어두운 색 */
+  body { background: #0d1018; }
+  .stage { perspective: 800px; perspective-origin: 50% 44%; touch-action: none; cursor: crosshair; }
+  .hint { color: #8f97ad; }
+  .hint b { color: #f3dfb4; }
+  .mo { --mo-shade: rgba(0, 0, 0, 0.6); }
+</style>
+</head>
+<body>
+<canvas class="fill" id="bg"></canvas>
+<div class="stage" id="stage"></div>
+<p class="hint">전등 주위를 <b>나선으로</b> 맴돌아요 · 포인터는 <b>두 번째 불빛</b>이에요</p>
+
+<script src="../../assets/moth.js"></script>
+<script>
+  const { makeMoth, Flit, loop, clamp, lerp, rand, approach, angDiff, noise, TAU } = MO;
+  const stage = document.getElementById('stage');
+  const cv = document.getElementById('bg'), ctx = cv.getContext('2d');
+  let W = 0, H = 0, S = 1;
+
+  // ---------- 불빛 둘: 전등(늘 켜짐) + 포인터(있을 때만) ----------
+  const lamp = { x: 0, y: 0, r: 15, power: 1, hit: 0, flick: noise(3.1), dip: 0 };
+  const torch = { x: -999, y: -999, r: 9, power: 0, on: false, off: 0 };
+  stage.addEventListener('pointermove', (e) => { torch.x = e.clientX; torch.y = e.clientY; torch.on = e.pointerType === 'mouse' || e.buttons > 0; torch.off = 0; });
+  stage.addEventListener('pointerdown', (e) => { torch.x = e.clientX; torch.y = e.clientY; torch.on = true; torch.off = 0; });
+  addEventListener('pointerup', (e) => { if (e.pointerType !== 'mouse') torch.off = 1.4; });   // 손을 떼도 잠깐 남음
+  stage.addEventListener('pointerleave', () => { torch.on = false; });
+
+  // 벽의 얼룩·먼지 (늘 같은 자리에 있도록 비율로 저장)
+  const stains = Array.from({ length: 26 }, () => ({ x: Math.random(), y: Math.random(), r: rand(10, 46), a: rand(0.03, 0.09) }));
+  const motes = Array.from({ length: 16 }, () => ({ a: rand(0, TAU), d: rand(0.15, 1), w: rand(0.05, 0.22) * (Math.random() < 0.5 ? -1 : 1), n: noise(rand(0.4, 0.9)), s: rand(0.6, 1.5) }));
+
+  function resize() {
+    const ow = W, oh = H;
+    W = stage.clientWidth; H = stage.clientHeight;
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    S = clamp(Math.min(W / 520, H / 380), 0.5, 1.7);
+    lamp.x = W * 0.5; lamp.y = H * 0.44; lamp.r = 15 * S;
+    flock.forEach((a) => {
+      a.m.scale = a.size * S; a.f.speed = a.speed * S; a.f.kick = 46 * S;
+      if (ow) { a.m.x *= W / ow; a.m.y *= H / oh; }
+    });
+  }
+
+  // ---------- 나방 ----------
+  const TONE = ['umber', 'ash', 'clay', 'moss', 'ash'];
+  const N = innerWidth * innerHeight > 520000 ? 5 : 4;
+  const flock = [];
+  for (let i = 0; i < N; i++) {
+    const m = makeMoth(stage, { tone: TONE[i], fold: 0, alt: 24, shadowShift: 1.0 });
+    const f = new Flit(m, { wobble: 2.2, jink: 0.9, altBase: 24, altRange: 11, rateBase: 6.2 + rand(-0.5, 0.8) });
+    flock.push({
+      m, f, size: rand(0.5, 0.64), speed: rand(118, 150),
+      side: Math.random() < 0.5 ? -1 : 1,      // 빛을 왼쪽에 두나 오른쪽에 두나 (도는 방향)
+      phi0: rand(1.04, 1.32),                   // 평소 유지하려는 각(rad). 90°(1.57)보다 작을수록 빨리 감겨 들어감
+      phi: rand(1.3, 1.9),
+      daze: 0, target: lamp, drift: noise(rand(0.25, 0.5)),
+    });
+  }
+  resize();
+  addEventListener('resize', resize);
+  flock.forEach((a, i) => {                    // 처음엔 전등 둘레에 흩어져서
+    const ang = (i / N) * TAU + rand(-0.4, 0.4), d = rand(70, 135) * S;
+    a.m.x = lamp.x + Math.cos(ang) * d; a.m.y = lamp.y + Math.sin(ang) * d * 0.8;
+    a.f.theta = ang + a.side * 1.5; a.m.heading = a.f.theta * 57.3 + 90; a.f.v = a.f.speed;
+  });
+
+  // 나방 눈에 보이는 밝기: 가까울수록 훨씬 밝음
+  const seen = (a, L) => L.power / (Math.pow(L.x - a.m.x, 2) + Math.pow(L.y - a.m.y, 2) + 900 * S * S);
+
+  function bump(a, L, d) {                     // 불빛에 탁 부딪힘 → 튕겨 나가 잠깐 허둥댐
+    const out = Math.atan2(a.m.y - L.y, a.m.x - L.x);
+    a.f.theta = out + rand(-0.6, 0.6);
+    a.f.v = a.f.speed * rand(1.7, 2.3);
+    a.m.x = L.x + Math.cos(out) * (L.r + 9 * S); a.m.y = L.y + Math.sin(out) * (L.r + 9 * S);
+    a.phi = rand(2.0, 2.5);                    // 빛을 등지는 각 → 바깥으로
+    a.daze = rand(0.3, 0.6);
+    a.m.pitch = rand(-28, 28); a.m.bank += rand(-40, 40);
+    if (Math.random() < 0.3) a.side = -a.side; // 가끔은 반대로 돌기 시작
+    if (L === lamp) lamp.hit = 1;
+  }
+
+  loop((dt, t) => {
+    if (torch.off > 0 && (torch.off -= dt) <= 0) torch.on = false;
+    torch.power = approach(torch.power, torch.on ? 0.8 : 0, torch.on ? 9 : 3, dt);
+    // 전등 깜빡임: 잔떨림 + 가끔 살짝 어두워짐
+    if (Math.random() < dt * 0.25) lamp.dip = rand(0.1, 0.3);
+    lamp.dip = approach(lamp.dip, 0, 9, dt);
+    lamp.hit = approach(lamp.hit, 0, 7, dt);
+    lamp.power = 1 + 0.035 * lamp.flick(t) - lamp.dip + 0.12 * lamp.hit;
+
+    drawScene(t, dt);
+
+    const reach = 150 * S, far = Math.min(W, H) * 0.34;
+    for (const a of flock) {
+      const { m, f } = a;
+      // 어느 빛을 따를까 — 지금 빛보다 1.3배 넘게 밝아 보여야 갈아탐
+      const other = a.target === lamp ? torch : lamp;
+      if (other.power > 0.05 && seen(a, other) > seen(a, a.target) * 1.3) { a.target = other; a.phi = Math.max(a.phi, 1.0); }
+      if (a.target.power < 0.05) a.target = lamp;
+      const L = a.target, dx = L.x - m.x, dy = L.y - m.y, d = Math.hypot(dx, dy);
+
+      // 빛을 옆구리 phi 각에 두려는 조향
+      const phiGoal = lerp(a.phi0 + 0.16 * a.drift(t), 0.45, clamp((d - far) / (60 * S), 0, 1));   // 너무 멀어지면 곧장 돌아옴
+      a.phi = approach(a.phi, phiGoal, a.phi > phiGoal ? 1.1 : 2.5, dt);
+      const want = Math.atan2(dy, dx) - a.side * a.phi;
+      a.daze = Math.max(0, a.daze - dt);
+      const dz = a.daze > 0 ? 1 : 0;
+      f.wobble = dz ? 7 : 2.2; f.jink = dz ? 3 : 0.9;
+      const near = clamp(1 - d / (90 * S), 0, 1);
+      f.step(dt, angDiff(f.theta, want) * (dz ? 1.5 : 5.2) + f.edge(W, H, 26 * S), f.speed * (1 + 0.25 * near));
+      m.pitch = approach(m.pitch, 6, 5, dt);
+      if (d < L.r + 7 * S && !dz) bump(a, L, d);
+
+      // 빛: 빛 쪽 날개가 밝고, 멀수록 어두움. 그림자는 빛 반대쪽으로
+      m.setLight(0.34);
+      const k1 = m.addLight(lamp.x, lamp.y, 1.25 * lamp.power, reach);
+      const k2 = torch.power > 0.02 ? m.addLight(torch.x, torch.y, 1.1 * torch.power, reach * 0.6) : 0;
+      const sx = (m.x - lamp.x) * k1 + (m.x - torch.x) * k2, sy = (m.y - lamp.y) * k1 + (m.y - torch.y) * k2, sl = Math.hypot(sx, sy) || 1;
+      m.sunX = sx / sl; m.sunY = sy / sl;
+      m.shadowAlpha = clamp((k1 + k2) * 1.3, 0, 1);
+      m.update(dt); m.render();
+      m.el.style.zIndex = Math.round(m.alt);
+    }
+  });
+
+  // ---------- 배경 그리기 ----------
+  function glow(x, y, r, rgb, a) {
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `rgba(${rgb},${a})`); g.addColorStop(0.35, `rgba(${rgb},${a * 0.42})`); g.addColorStop(1, `rgba(${rgb},0)`);
+    ctx.fillStyle = g; ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  function drawScene(t, dt) {
+    const bg = ctx.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#10131d'); bg.addColorStop(1, '#090b11');
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+    // 벽 얼룩 (빛을 받아야 보임)
+    for (const s of stains) glow(s.x * W, s.y * H, s.r * S * 1.8, '150,160,190', s.a * 0.55);
+    // 전등 빛이 벽에 번짐
+    const P = lamp.power, R = Math.max(W, H) * 0.62;
+    ctx.globalCompositeOperation = 'lighter';
+    glow(lamp.x, lamp.y, R, '255,206,138', 0.44 * P);
+    glow(lamp.x, lamp.y, 120 * S, '255,226,170', 0.3 * P);
+    if (torch.power > 0.02) {
+      glow(torch.x, torch.y, 190 * S, '196,222,255', 0.3 * torch.power);
+      glow(torch.x, torch.y, 34 * S, '236,244,255', 0.75 * torch.power);
+    }
+    // 빛 속에 떠다니는 먼지
+    for (const p of motes) {
+      p.a += p.w * dt;
+      const d = (p.d + 0.06 * p.n(t)) * 150 * S, x = lamp.x + Math.cos(p.a) * d, y = lamp.y + Math.sin(p.a) * d * 0.8 + 6 * S * p.n(t + 9);
+      ctx.fillStyle = `rgba(255,232,190,${(0.34 * (1 - p.d * 0.75) * P).toFixed(3)})`;
+      ctx.beginPath(); ctx.arc(x, y, p.s * S, 0, TAU); ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    // 전등: 벽 받침 + 갓 테 + 빛나는 유리구
+    const r = lamp.r;
+    ctx.fillStyle = '#1a1c24';
+    ctx.fillRect(lamp.x - r * 0.42, lamp.y - r * 2.7, r * 0.84, r * 2.2);
+    ctx.beginPath(); ctx.arc(lamp.x, lamp.y - r * 2.7, r * 0.75, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(lamp.x, lamp.y, r * 1.22, 0, TAU); ctx.fillStyle = '#3b3526'; ctx.fill();
+    const gl = ctx.createRadialGradient(lamp.x - r * 0.2, lamp.y - r * 0.25, 0, lamp.x, lamp.y, r);
+    gl.addColorStop(0, '#fffdf2'); gl.addColorStop(0.55, `rgb(255,${Math.round(232 + 14 * (P - 1) * 4)},176)`); gl.addColorStop(1, '#f2b45c');
+    ctx.beginPath(); ctx.arc(lamp.x, lamp.y, r, 0, TAU); ctx.fillStyle = gl; ctx.fill();
+    ctx.globalCompositeOperation = 'lighter';
+    glow(lamp.x, lamp.y, r * (3.2 + 1.4 * lamp.hit), '255,238,200', 0.5 * P);
+    ctx.globalCompositeOperation = 'source-over';
+  }
+</script>
+</body>
+</html>

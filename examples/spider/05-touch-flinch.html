@@ -1,0 +1,325 @@
+<!doctype html>
+<!--
+  걷기(Gait)는 그대로 두고, 다리마다 '자세 덮어쓰기 비율(0~1)'만 올렸다 내림 → 움츠림·위협 자세가 걸음과 매끄럽게 섞임.
+  손대면: 닿은 반대쪽으로 움찔(스프링) + 여덟 다리를 몸 옆으로 확 당기고 납작 엎드려 굳음(처음엔 더 꽉, 살짝 풀림).
+  그대로 두면 더듬이다리만 까딱 → 앞다리 하나를 슬쩍 내밀어 보고 → 앞다리부터 차례로 펴며 벽을 피해 후다닥.
+  굳어 있을 때 또 건드리면 홱 돌아서 뒤로 젖히며 앞다리 두 쌍을 치켜듦. 계속 건드리면 앞으로 툭 내지름.
+  그냥 가까이 대기만 하면 포인터를 마주 본 채 조금씩 끊어서 뒷걸음질.
+-->
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>거미 05 · 손대면 움츠리기</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  canvas.fill { touch-action: none; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas class="fill" id="cv"></canvas>
+<p class="hint">거미를 <b>톡</b> 건드려 보세요 · 굳어 있을 때 <b>또</b> 건드리면 앞다리를 번쩍 들어요</p>
+
+<script src="../../assets/spider.js"></script>
+<script>
+  const { Spider, Gait, loop, fitCanvas, theme, onThemeChange, clamp, lerp, rand, easeOut, follow, noise, angDiff, rgba, TAU } = SP;
+  const cv = document.getElementById('cv');
+  let th = theme();
+  let W = 0, H = 0, s = 14, sp = null, gait = null, clock = 0;
+  const ground = document.createElement('canvas');
+
+  // ---------- 상태 ----------
+  const pos = { x: 0, y: 0 };                       // 거미의 '논리' 위치
+  const jit = { x: 0, y: 0, vx: 0, vy: 0 };         // 움찔: 스프링으로 되돌아오는 몸 흔들림
+  const mv = { vx: 0, vy: 0, omega: 0, mode: 'go', timer: 1, goal: null, wanderT: 0 };
+  const st = { mode: 'wander', t: 0, T: 0, hit: null, dir: 0, tight: 0, rear: 0, jab: 0, jabT: 9, lead: 0,
+               go: true, goT: 0, farT: 0, armed: true };
+  const ptr = { x: 0, y: 0, on: false };
+  const owGoal = new Array(8).fill(0), owRate = new Array(8).fill(20), owWait = new Array(8).fill(0);
+  const pl = Array.from({ length: 8 }, () => ({ x: 0, y: 0, z: 0 }));   // 다리별 '덮어쓸 자세' (부드럽게 따라감)
+  let alt = 0.55, pings = [];
+
+  const view = fitCanvas(cv, (v) => {
+    W = v.W; H = v.H;
+    s = clamp(Math.min(W, H) * 0.05, 9, 22);
+    buildGround(v.dpr);
+    if (sp) { sp.size = s; pos.x = clamp(pos.x, 2 * s, W - 2 * s); pos.y = clamp(pos.y, 2 * s, H - 2 * s); sp.x = pos.x; sp.y = pos.y; gait.reset(); mv.goal = null; }
+  });
+  const ctx = view.ctx;
+  onThemeChange(() => { th = theme(); if (sp) sp.theme = th; buildGround(view.dpr); });
+
+  /** 바닥 결: 고정된 잔점·자갈 → 발이 '박혀 있는' 게 눈에 보이게 */
+  function buildGround(dpr) {
+    ground.width = Math.round(W * dpr); ground.height = Math.round(H * dpr);
+    const g = ground.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    for (let i = 0, n = Math.round((W * H) / 650); i < n; i++) {
+      g.fillStyle = rgba(th.muted, rand(0.05, 0.16));
+      g.beginPath(); g.arc(rand(0, W), rand(0, H), rand(0.4, 1.3), 0, TAU); g.fill();
+    }
+    for (let i = 0, n = Math.round((W * H) / 14000); i < n; i++) {
+      const x = rand(0, W), y = rand(0, H), r = rand(1.5, 4.5);
+      g.fillStyle = rgba(th.muted, 0.09);
+      g.beginPath(); g.ellipse(x, y, r, r * rand(0.55, 0.9), rand(0, TAU), 0, TAU); g.fill();
+      g.fillStyle = 'rgba(255,255,255,0.12)';
+      g.beginPath(); g.ellipse(x - r * 0.25, y - r * 0.3, r * 0.4, r * 0.25, -0.5, 0, TAU); g.fill();
+    }
+  }
+
+  pos.x = W * 0.5; pos.y = H * 0.52;
+  sp = new Spider({ size: s, x: pos.x, y: pos.y, heading: rand(0, TAU), alt: 0.55, theme: th });
+  gait = new Gait(sp, { threshold: 0.7, maxLead: 0.42, stepTime: 0.15, lift: 0.5 });
+  gait.pose = (i) => pl[i];
+
+  function set(mode, T) { st.mode = mode; st.t = 0; st.T = T || 0; }
+  /** 벽에서 밀어내는 방향 (가까울수록 큼) */
+  function wallPush(range) {
+    return [Math.max(0, 1 - pos.x / range) - Math.max(0, 1 - (W - pos.x) / range),
+            Math.max(0, 1 - pos.y / range) - Math.max(0, 1 - (H - pos.y) / range)];
+  }
+
+  // ---------- 포인터 ----------
+  const touchR = () => Math.max(2.6 * s, 30);
+  const setPtr = (e) => { ptr.x = e.clientX; ptr.y = e.clientY; ptr.on = true; };
+  cv.addEventListener('pointermove', setPtr);
+  cv.addEventListener('pointerdown', (e) => {
+    setPtr(e);
+    pings.push({ x: e.clientX, y: e.clientY, t: 0 });
+    if (pings.length > 6) pings.shift();
+    if (Math.hypot(e.clientX - sp.x, e.clientY - sp.y) < touchR()) { st.armed = false; touch(e.clientX, e.clientY); }
+  });
+  cv.addEventListener('pointerup', (e) => { if (e.pointerType !== 'mouse') ptr.on = false; });
+  cv.addEventListener('pointerleave', () => { ptr.on = false; });
+  cv.addEventListener('pointercancel', () => { ptr.on = false; });
+
+  // ---------- 반응 ----------
+  function touch(x, y) {
+    if (st.mode === 'flinch') { if (st.t > 0.12) startThreat(x, y); }
+    else if (st.mode === 'threat') {
+      // 위협 중에 또 건드림 → 앞으로 툭 내지르고, 조금 더 오래 버팀
+      st.hit = [x, y]; st.jabT = 0; st.T = Math.min(st.T + 0.8, st.t + 2.4);
+    } else startFlinch(x, y);
+  }
+  function startFlinch(x, y) {
+    st.hit = [x, y];
+    set('flinch', rand(0.95, 1.6));
+    st.tight = 1; st.lead = Math.random() < 0.5 ? 0 : 1;
+    let ux = pos.x - x, uy = pos.y - y; const d = Math.hypot(ux, uy);
+    if (d < 1) { ux = -Math.cos(sp.heading); uy = -Math.sin(sp.heading); } else { ux /= d; uy /= d; }
+    jit.vx += ux * 7 * s; jit.vy += uy * 7 * s;                // 닿은 반대쪽으로 움찔
+    sp.abdV += rand(-4, 4);
+    mv.vx = mv.vy = 0; mv.omega = 0;
+    for (let i = 0; i < 8; i++) { owGoal[i] = 1; owRate[i] = 36; owWait[i] = 0; }
+  }
+  function startBolt() {
+    // 달아날 방향: 닿은 곳 반대쪽을 중심으로, 벽까지 여유가 가장 큰 쪽
+    const base = Math.atan2(pos.y - st.hit[1], pos.x - st.hit[0]) + rand(-0.35, 0.35);
+    let best = base, room = -1;
+    for (const o of [0, 0.6, -0.6, 1.2, -1.2, 1.9, -1.9]) {
+      const a = base + o, c = Math.cos(a), sn = Math.sin(a);
+      const tx = c > 0 ? (W - pos.x) / c : c < 0 ? -pos.x / c : 1e9, ty = sn > 0 ? (H - pos.y) / sn : sn < 0 ? -pos.y / sn : 1e9;
+      const r = Math.min(tx, ty) - Math.abs(o) * 2 * s;
+      if (r > room) { room = r; best = a; }
+      if (r > 9 * s) break;
+    }
+    st.dir = best;
+    set('bolt', rand(0.55, 0.95));
+    gait.reset();
+    // 앞다리부터 차례로 펴짐
+    for (let i = 0; i < 8; i++) { owGoal[i] = 0; owRate[i] = 26; owWait[i] = sp.legs[i].pair * 0.022 + rand(0, 0.02); }
+  }
+  function startThreat(x, y) {
+    st.hit = [x, y];
+    set('threat', rand(1.7, 2.5));
+    st.jabT = 9;
+    gait.reset();
+    for (let i = 0; i < 8; i++) {
+      const front = sp.legs[i].pair < 2;
+      owGoal[i] = front ? 1 : 0; owRate[i] = front ? 30 : 18;
+      owWait[i] = front ? 0 : rand(0, 0.05);
+    }
+    sp.abdV += rand(-3, 3);
+  }
+
+  /** 다리 i 의 덮어쓸 자세 (로컬 px). 위에서 보면 든 다리는 짧아 보이므로 x·y 는 가깝게, z 는 높게 */
+  function poseGoal(i) {
+    const l = sp.legs[i], hx = l.hx * s, hy = l.hy * s;
+    if ((st.mode === 'threat' || st.mode === 'lower') && l.pair < 2) {
+      const w = noise(clock * 2.3 + i * 7.1);                  // 치켜든 다리가 살짝살짝 흔들림
+      if (l.pair === 0) return { x: hx + (1.1 + 0.5 * st.jab) * s, y: hy + l.side * (0.76 + 0.09 * w) * s, z: (1.35 + 0.14 * w - 0.95 * st.jab) * s };
+      return { x: hx + (0.45 + 0.2 * st.jab) * s, y: hy + l.side * (1.12 + 0.07 * w) * s, z: (0.85 + 0.1 * w - 0.4 * st.jab) * s };
+    }
+    // 움츠림: 발을 몸 바로 옆으로. 처음엔 더 꽉 쥐었다가 살짝 풀림
+    const peek = st.mode === 'flinch' && st.t > st.T - 0.38 && i === st.lead ? 0.2 : 0;
+    const r = sp.restLocal(i, 1, 0.3 - 0.07 * st.tight + peek);
+    return { x: r.x, y: r.y, z: 0 };
+  }
+
+  // ---------- 평소: 달리다 멈추다 배회 ----------
+  function wander(dt) {
+    const m = 2.5 * s;
+    if (!mv.goal || Math.hypot(mv.goal[0] - pos.x, mv.goal[1] - pos.y) < 1.2 * s || (mv.wanderT -= dt) < 0) {
+      const a = sp.heading + rand(-1.5, 1.5), d = Math.min(W, H) * rand(0.18, 0.42);
+      mv.goal = [clamp(pos.x + Math.cos(a) * d, m, W - m), clamp(pos.y + Math.sin(a) * d, m, H - m)];
+      mv.wanderT = rand(3, 7);
+    }
+    mv.timer -= dt;
+    if (mv.timer <= 0) {
+      if (mv.mode === 'go') { mv.mode = 'rest'; mv.timer = rand(0.35, 1.6); }
+      else { mv.mode = 'go'; mv.timer = rand(0.5, 1.7); }
+    }
+    const dx = mv.goal[0] - pos.x, dy = mv.goal[1] - pos.y, d = Math.hypot(dx, dy);
+    const diff = angDiff(sp.heading, Math.atan2(dy, dx));
+    let want = 0, og = 0;
+    if (d > 0.8 * s && mv.mode === 'go') {
+      want = Math.min(5 * s * (1 + 0.15 * noise(clock * 2.7)), (d - 0.8 * s) * 3) * clamp(1.4 - Math.abs(diff) / 1.3, 0.08, 1);
+      og = clamp(diff * 6, -5.5, 5.5);
+    }
+    return [want, og];
+  }
+
+  /** 급히 달릴 때 이웃 다리를 기다리다 뒤처진 발은 바로 내딛게 → 다리가 늘어져 끌리지 않음 */
+  function catchUp() {
+    const lim = gait.threshold * s * 1.9;
+    gait.feet.forEach((f, i) => {
+      if (f.on || gait.ow[i] > 0.05) return;
+      const q = gait.target(i, 0);
+      if (Math.hypot(f.x - q[0], f.y - q[1]) > lim) { f.on = true; f.t = 0; f.fx = f.x; f.fy = f.y; f.T = gait.minStep; f.ahead = gait.minStep; }
+    });
+  }
+
+  // ---------- 한 스텝 ----------
+  function sim(dt) {
+    st.t += dt; clock += dt;
+    const ch = Math.cos(sp.heading), sh = Math.sin(sp.heading);
+    const pdx = ptr.x - pos.x, pdy = ptr.y - pos.y, pd = Math.hypot(pdx, pdy);
+    const waryR = 6 * s;
+    let wvx = 0, wvy = 0, og = 0, palp = 1, raise = 0, altGoal = 0.55, acc = 10, rearGoal = 0;
+
+    // 포인터가 몸 위로 쑥 들어오면 그것도 '건드림' (한 번 벗어나야 다시 인정)
+    if (!ptr.on || pd > 2.4 * s) st.armed = true;
+    else if (st.armed && pd < 0.9 * s) { st.armed = false; touch(ptr.x, ptr.y); }
+
+    if (st.mode === 'wander') {
+      const [want, o] = wander(dt);
+      wvx = ch * want; wvy = sh * want; og = o;
+      if (ptr.on && pd < waryR) { set('wary'); st.go = false; st.goT = rand(0.15, 0.4); st.farT = 0; }
+    } else if (st.mode === 'wary') {
+      // 포인터를 마주 본 채 조금씩 끊어서 뒷걸음질. 벽에 몰리면 옆으로 비켜 감
+      const diff = angDiff(sp.heading, Math.atan2(pdy, pdx));
+      og = clamp(diff * 6, -5, 5);
+      const close = clamp((waryR - pd) / (waryR - 2.2 * s), 0, 1);
+      st.goT -= dt;
+      if (st.goT <= 0) { st.go = !st.go; st.goT = st.go ? rand(0.25, 0.7) : rand(0.12, 0.5); }
+      const n = wallPush(4.5 * s);
+      let rx = -pdx / (pd || 1) + n[0] * 1.6, ry = -pdy / (pd || 1) + n[1] * 1.6;
+      const rl = Math.hypot(rx, ry);
+      if (rl < 0.35) { rx = pdy / (pd || 1); ry = -pdx / (pd || 1); } else { rx /= rl; ry /= rl; }   // 구석: 옆걸음
+      const v = (st.go ? 3.4 : 0.5) * s * close * (Math.abs(diff) < 1 ? 1 : 0.25);
+      wvx = rx * v; wvy = ry * v; acc = 7;
+      palp = 2 + 2 * close; raise = 0.35 * close;
+      st.farT = ptr.on && pd < waryR * 1.2 ? 0 : st.farT + dt;
+      if (st.farT > 0.6) { set('wander'); mv.mode = 'rest'; mv.timer = rand(0.4, 1.0); mv.goal = null; }
+    } else if (st.mode === 'flinch') {
+      // 납작 엎드려 굳음. 끝나기 직전에만 더듬이다리가 까딱 (도망 전 예비동작)
+      altGoal = 0.26; acc = 30;
+      st.tight += (0 - st.tight) * follow(3.5, dt);
+      palp = st.t > st.T - 0.45 ? 3.5 : 0;
+      if (st.t > st.T) startBolt();
+    } else if (st.mode === 'bolt') {
+      // 후다닥: 확 가속 → 끝에서 급히 줄임. 벽 가까이선 벽을 따라 꺾음
+      const n = wallPush(3.5 * s);
+      if (n[0] || n[1]) {
+        const a = Math.atan2(Math.sin(st.dir) + n[1] * 1.8, Math.cos(st.dir) + n[0] * 1.8);
+        st.dir += angDiff(st.dir, a) * follow(8, dt);
+      }
+      const diff = angDiff(sp.heading, st.dir + 0.3 * noise(clock * 5));
+      og = clamp(diff * 12, -13, 13);
+      const env = Math.min(1, st.t / 0.16) * clamp((st.T - st.t) / 0.22, 0, 1);
+      const v = 13 * s * env * clamp(1.3 - Math.abs(diff) / 1.4, 0.15, 1);
+      wvx = ch * v; wvy = sh * v; acc = 16; palp = 0.4;
+      if (st.t > st.T) set('recover', rand(0.5, 1.3));
+    } else if (st.mode === 'recover') {
+      acc = 18; palp = 2;                                       // 멈춰서 숨 고르기
+      if (st.t > st.T) { set('wander'); mv.mode = 'rest'; mv.timer = rand(0.2, 0.6); mv.goal = null; }
+    } else if (st.mode === 'threat') {
+      // 건드린 쪽으로 홱 돌아서 몸을 뒤로 젖히고 앞다리 두 쌍을 치켜듦
+      const tx = ptr.on ? ptr.x : st.hit[0], ty = ptr.on ? ptr.y : st.hit[1];
+      const diff = angDiff(sp.heading, Math.atan2(ty - pos.y, tx - pos.x));
+      og = st.t < 0.35 ? clamp(diff * 12, -11, 11) : clamp(diff * 4, -3, 3);
+      altGoal = 0.9; raise = 1; palp = 0.5; rearGoal = 1; acc = 20;
+      if (st.t > st.T) { set('lower', 0.6); for (let i = 0; i < 8; i++) { owGoal[i] = 0; owRate[i] = 7; owWait[i] = sp.legs[i].pair * 0.08; } }
+    } else if (st.mode === 'lower') {
+      altGoal = 0.6; raise = 0; palp = 2; acc = 20;             // 천천히 다리를 내림
+      if (st.t > st.T) { set('wander'); mv.mode = 'rest'; mv.timer = rand(0.5, 1.2); mv.goal = null; }
+    }
+
+    // 내지르기: 0.05초 만에 툭 → 0.25초에 걸쳐 거둠
+    st.jabT += dt;
+    st.jab = st.jabT < 0.05 ? st.jabT / 0.05 : clamp(1 - (st.jabT - 0.05) / 0.25, 0, 1);
+    st.rear += (rearGoal - st.rear) * follow(rearGoal ? 16 : 6, dt);
+
+    // 몸 이동
+    mv.omega += (og - mv.omega) * follow(st.mode === 'bolt' || st.mode === 'threat' ? 20 : 12, dt);
+    const k = follow(acc, dt);
+    mv.vx += (wvx - mv.vx) * k; mv.vy += (wvy - mv.vy) * k;
+    sp.heading += mv.omega * dt;
+    const m = 1.6 * s;
+    pos.x = clamp(pos.x + mv.vx * dt, m, W - m); pos.y = clamp(pos.y + mv.vy * dt, m, H - m);
+    jit.vx += (-260 * jit.x - 22 * jit.vx) * dt; jit.vy += (-260 * jit.y - 22 * jit.vy) * dt;
+    jit.x += jit.vx * dt; jit.y += jit.vy * dt;
+    const tremble = st.mode === 'flinch' && st.t < 0.3 ? (1 - st.t / 0.3) * 0.035 * s : 0;   // 굳는 순간의 잔떨림
+    const fwd = (0.55 * st.jab - 0.32 * st.rear) * s;
+    const c2 = Math.cos(sp.heading), s2 = Math.sin(sp.heading);
+    const nx = pos.x + jit.x + c2 * fwd + rand(-1, 1) * tremble, ny = pos.y + jit.y + s2 * fwd + rand(-1, 1) * tremble;
+    const vx = (nx - sp.x) / dt, vy = (ny - sp.y) / dt;
+    sp.x = nx; sp.y = ny;
+
+    // 다리 자세 덮어쓰기: 비율과 자세를 각각 부드럽게 따라가게
+    const rate = st.mode === 'flinch' ? 38 : st.mode === 'lower' ? 8 : 18;
+    for (let i = 0; i < 8; i++) {
+      owWait[i] -= dt;
+      const goal = owWait[i] > 0 ? gait.ow[i] : owGoal[i];
+      gait.ow[i] += (goal - gait.ow[i]) * follow(owRate[i], dt);
+      const p = pl[i];
+      if (owGoal[i] === 0 && gait.ow[i] < 0.01) {
+        gait.ow[i] = 0;
+        const f = sp.legs[i].f; p.x = f.x; p.y = f.y; p.z = f.z;      // 다음에 덮어쓸 땐 지금 다리 모양에서 출발
+      } else {
+        const g = poseGoal(i), kk = follow(rate * (sp.legs[i].pair === 1 ? 0.7 : 1), dt);
+        p.x += (g.x - p.x) * kk; p.y += (g.y - p.y) * kk; p.z += (g.z - p.z) * kk;
+        if (owGoal[i] === 0 && !gait.feet[i].on) {
+          // 풀리는 동안 디딜 곳을 '지금의 편한 자리'로 맞춰 둠 → 걷기로 매끄럽게 넘어감
+          const q = gait.target(i, 0), f = gait.feet[i]; f.x = q[0]; f.y = q[1];
+        }
+      }
+    }
+    gait.minStep = st.mode === 'bolt' ? 0.038 : 0.055;                // 달아날 땐 발을 더 재게 놀림
+    sp.palpGain = palp;
+    sp.palpRaise += (raise - sp.palpRaise) * follow(raise > sp.palpRaise ? 18 : 5, dt);
+    catchUp();
+    gait.update(dt, vx, vy, mv.omega);
+    alt += (altGoal - alt) * follow(altGoal < alt ? 30 : 9, dt);
+    sp.alt = alt + gait.bob / s;
+    sp.update(dt, mv.omega);
+  }
+
+  loop((dt) => {
+    if (dt > 0) {
+      const n = Math.ceil(dt / 0.017);
+      for (let i = 0; i < n; i++) sim(dt / n);
+    }
+    ctx.clearRect(0, 0, W, H);
+    ctx.drawImage(ground, 0, 0, W, H);
+    for (let i = pings.length - 1; i >= 0; i--) {
+      const p = pings[i]; p.t += dt;
+      const k = p.t / 0.45;
+      if (k >= 1) { pings.splice(i, 1); continue; }
+      ctx.strokeStyle = rgba(th.accent, (1 - k) * 0.7); ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(p.x, p.y, (0.4 + 1.5 * easeOut(k)) * s, 0, TAU); ctx.stroke();
+    }
+    sp.draw(ctx, th);
+  });
+</script>
+</body>
+</html>

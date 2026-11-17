@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  개미 03 · 손대면 흩어지기
+  길은 점마다 "냄새 세기"를 가진 선. 개미는 길 위 조금 앞 지점을 향해 조향하며 따라가다, 앞쪽 냄새가 끊기면 멈칫하고 헤맴.
+  손이 지나가면 그 둘레의 냄새가 지워지고 가까운 개미는 놀람(빠른 속도 + 0.1초마다 방향이 튀는 질주, 더듬이 떨기) →
+  느려지며 끊긴 자리를 맴돌고(갈팡질팡 + 시간이 갈수록 길 쪽으로 끌림), 밟고 다닌 자리에 냄새가 다시 쌓여 줄이 이어짐.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>개미 03 · 손대면 흩어지기</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style> canvas { touch-action: none; } </style>
+</head>
+<body>
+<canvas class="fill" id="cv"></canvas>
+<p class="hint">줄 위를 <b>문지르면</b> 냄새길이 끊겨 우왕좌왕 → 끊긴 자리를 <b>맴돌며 더듬다</b> 다시 줄을 이음</p>
+
+<script>
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  const TAU = Math.PI * 2;
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const damp = (a, b, k, dt) => lerp(a, b, 1 - Math.exp(-k * dt));
+  const smooth = (t) => { t = clamp(t, 0, 1); return t * t * (3 - 2 * t); };
+  const angDiff = (a, b) => { let d = (b - a) % TAU; if (d > Math.PI) d -= TAU; if (d < -Math.PI) d += TAU; return d; };
+
+  let W = 0, H = 0, U = 0, L = 14, SPEED = 60;     // L = 개미 몸길이(px), SPEED = 기본 걸음 속도(px/s)
+
+  // ---------------- 테마 색 ----------------
+  const theme = { shade: 'rgba(28,48,36,0.26)', muted: '#5b6b62', leaf: '#5d9b5a', dark: false };
+  let COL = null;
+  function readTheme() {
+    const cs = getComputedStyle(document.documentElement);
+    const v = (n, d) => cs.getPropertyValue(n).trim() || d;
+    theme.shade = v('--shade', theme.shade); theme.muted = v('--muted', theme.muted); theme.leaf = v('--leaf', theme.leaf);
+    theme.dark = matchMedia('(prefers-color-scheme: dark)').matches;
+    COL = theme.dark
+      ? { body: '#b9783f', gaster: '#93592a', leg: '#c48a57', sheen: 'rgba(255,236,205,0.35)', crumb: '#f0cf8e', crumbEdge: '#a8823f' }
+      : { body: '#2c1c15', gaster: '#1f1410', leg: '#3b2a20', sheen: 'rgba(255,255,255,0.25)', crumb: '#e6bd76', crumbEdge: '#a87a35' };
+  }
+  matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', readTheme);
+  readTheme();
+
+  // ================= 개미 그리기 (복사해서 쓰는 부분) =================
+  // a = { x, y, hd(라디안, 0 = 오른쪽), L(몸길이 px), sc(배율), gait(걸음 위상 0~1),
+  //       antL, antR(더듬이 추가 각도: + 벌림 / - 앞으로 모음), carry(물고 있는 부스러기 0~1) }
+  const LEGS = [[0.12, 0.36, 0.25], [0.05, 0.03, 0.33], [-0.02, -0.33, 0.29]];   // [엉덩이 x, 발 x, 발 y] 몸길이 비율
+
+  /** 그림자 윤곽을 현재 path 에 더함 (여러 마리를 한 번에 fill → 겹쳐도 진해지지 않음) */
+  function antShadowPath(c, a) {
+    const L = a.L * a.sc;
+    c.save();
+    c.translate(a.x + L * 0.06, a.y + L * 0.1); c.rotate(a.hd);
+    c.moveTo(-0.1 * L, 0); c.ellipse(-0.3 * L, 0, 0.2 * L, 0.13 * L, 0, 0, TAU);
+    c.moveTo(0.18 * L, 0); c.ellipse(0.05 * L, 0, 0.13 * L, 0.075 * L, 0, 0, TAU);
+    c.moveTo(0.37 * L, 0); c.ellipse(0.27 * L, 0, 0.1 * L, 0.095 * L, 0, 0, TAU);
+    c.restore();
+  }
+
+  function drawAnt(c, a) {
+    const L = a.L;
+    c.save();
+    c.translate(a.x, a.y); c.rotate(a.hd); c.scale(a.sc, a.sc);
+    c.lineCap = 'round'; c.lineJoin = 'round';
+
+    // 다리 3쌍: 삼각대 걸음 (왼앞·오른가운데·왼뒤 ↔ 반대쪽 셋). 디딜 땐 천천히 뒤로, 옮길 땐 빠르게 앞으로
+    c.strokeStyle = COL.leg; c.lineWidth = Math.max(0.8, L * 0.045);
+    c.beginPath();
+    for (let k = 0; k < 3; k++) for (const s of [-1, 1]) {
+      const p = (a.gait + ((k + (s > 0 ? 1 : 0)) % 2) * 0.5) % 1;
+      const sw = p < 0.6 ? lerp(1, -1, p / 0.6) : lerp(-1, 1, smooth((p - 0.6) / 0.4));
+      const up = p < 0.6 ? 0 : Math.sin(Math.PI * (p - 0.6) / 0.4);
+      const hx = LEGS[k][0] * L, fx = (LEGS[k][1] + sw * 0.1) * L, fy = s * (LEGS[k][2] - up * 0.035) * L;
+      const kx = lerp(hx, fx, 0.5) + (k === 2 ? -0.03 : 0.03) * L, ky = s * LEGS[k][2] * 0.62 * L;
+      c.moveTo(hx, s * 0.04 * L); c.lineTo(kx, ky); c.lineTo(fx, fy);
+    }
+    c.stroke();
+
+    // 더듬이: ㄱ자로 꺾인 두 마디
+    c.lineWidth = Math.max(0.7, L * 0.035);
+    c.beginPath();
+    for (const s of [-1, 1]) {
+      const w = s < 0 ? a.antL : a.antR;
+      const a1 = s * (0.9 + w), a2 = s * (0.15 + w * 0.7);
+      const bx = 0.34 * L, by = s * 0.045 * L;
+      const ex = bx + Math.cos(a1) * 0.12 * L, ey = by + Math.sin(a1) * 0.12 * L;
+      c.moveTo(bx, by); c.lineTo(ex, ey); c.lineTo(ex + Math.cos(a2) * 0.17 * L, ey + Math.sin(a2) * 0.17 * L);
+    }
+    c.stroke();
+
+    // 몸: 배 – 배자루 – 가슴 – 머리
+    c.fillStyle = COL.gaster;
+    c.beginPath(); c.ellipse(-0.3 * L, 0, 0.2 * L, 0.13 * L, 0, 0, TAU); c.fill();
+    c.fillStyle = COL.body;
+    c.beginPath(); c.arc(-0.085 * L, 0, 0.04 * L, 0, TAU); c.fill();
+    c.beginPath(); c.ellipse(0.05 * L, 0, 0.13 * L, 0.072 * L, 0, 0, TAU); c.fill();
+    c.beginPath(); c.ellipse(0.27 * L, 0, 0.1 * L, 0.095 * L, 0, 0, TAU); c.fill();
+    // 광택: 빛은 항상 화면 왼쪽 위에서 (몸이 돌아도 따라 돌지 않게 되돌려 계산)
+    const lx = -0.5 * Math.cos(a.hd) - 0.75 * Math.sin(a.hd), ly = 0.5 * Math.sin(a.hd) - 0.75 * Math.cos(a.hd);
+    c.fillStyle = COL.sheen;
+    c.beginPath(); c.ellipse((-0.3 + lx * 0.07) * L, ly * 0.05 * L, 0.09 * L, 0.05 * L, 0, 0, TAU); c.fill();
+    c.beginPath(); c.arc((0.27 + lx * 0.04) * L, ly * 0.035 * L, 0.035 * L, 0, TAU); c.fill();
+
+    // 물고 있는 부스러기
+    if (a.carry > 0.02) {
+      const r = a.carry * 0.15 * L, x = 0.37 * L + r;
+      c.fillStyle = COL.crumb; c.strokeStyle = COL.crumbEdge; c.lineWidth = Math.max(0.6, L * 0.03);
+      c.beginPath();
+      c.moveTo(x + r * 1.05, -r * 0.3); c.lineTo(x + r * 0.2, -r); c.lineTo(x - r * 0.9, -r * 0.25);
+      c.lineTo(x - r * 0.35, r * 0.9); c.lineTo(x + r * 0.8, r * 0.7); c.closePath();
+      c.fill(); c.stroke();
+    }
+    c.restore();
+  }
+
+  // ---------------- 길: 화면을 가로지르는 곡선 + 점마다 냄새 세기 ----------------
+  const CTRL = [[-0.12, 0.6], [0.16, 0.42], [0.4, 0.58], [0.64, 0.38], [0.86, 0.5], [1.12, 0.4]];
+  const trail = { pts: [], ph: new Float32Array(0), wipe: new Float32Array(0), ds: 3, len: 1 };
+
+  function buildTrail() {
+    const P = CTRL.map(([fx, fy]) => ({ x: fx * W, y: fy * H }));
+    const raw = [];
+    for (let i = 0; i < P.length - 1; i++) {
+      const p0 = P[Math.max(0, i - 1)], p1 = P[i], p2 = P[i + 1], p3 = P[Math.min(P.length - 1, i + 2)];
+      for (let j = 0; j < 28; j++) {
+        const t = j / 28, t2 = t * t, t3 = t2 * t;
+        const cr = (a, b, c, d) => 0.5 * (2 * b + (c - a) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (3 * b - a - 3 * c + d) * t3);
+        raw.push({ x: cr(p0.x, p1.x, p2.x, p3.x), y: cr(p0.y, p1.y, p2.y, p3.y) });
+      }
+    }
+    raw.push(P[P.length - 1]);
+    const ds = trail.ds, out = [raw[0]];
+    let need = ds;
+    for (let i = 1; i < raw.length; i++) {
+      let a = raw[i - 1];
+      const b = raw[i];
+      let seg = Math.hypot(b.x - a.x, b.y - a.y);
+      while (seg >= need) {
+        const t = need / seg;
+        a = { x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t) };
+        out.push(a); seg -= need; need = ds;
+      }
+      need -= seg;
+    }
+    trail.pts = out; trail.len = (out.length - 1) * ds;
+    trail.ph = new Float32Array(out.length).fill(1);         // 냄새 세기 0~1
+    trail.wipe = new Float32Array(out.length).fill(-100);    // 마지막으로 지워진 시각
+  }
+  /** 길 위 거리 s 의 좌표와 진행 각도 */
+  function at(s) {
+    const n = trail.pts.length;
+    const k = clamp(s / trail.ds, 0, n - 1.001), i = Math.floor(k), f = k - i;
+    const a = trail.pts[i], b = trail.pts[i + 1];
+    const p = trail.pts[Math.max(0, i - 2)], q = trail.pts[Math.min(n - 1, i + 3)];
+    return { x: lerp(a.x, b.x, f), y: lerp(a.y, b.y, f), ang: Math.atan2(q.y - p.y, q.x - p.x) };
+  }
+  const phAt = (s) => trail.ph[clamp(Math.round(s / trail.ds), 0, trail.pts.length - 1)];
+  /** (x, y) 에서 가장 가까운 길 점 (i0~i1 범위에서만 찾음) */
+  function nearest(x, y, i0, i1) {
+    i0 = Math.max(0, Math.floor(i0)); i1 = Math.min(trail.pts.length - 1, Math.ceil(i1));
+    let bi = i0, bd = 1e12;
+    for (let i = i0; i <= i1; i++) { const p = trail.pts[i], d = (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y); if (d < bd) { bd = d; bi = i; } }
+    return { i: bi, d: Math.sqrt(bd) };
+  }
+
+  // ---------------- 개미 ----------------
+  const ants = [], ripples = [];
+  let RW = 40;                                    // 손이 닿는 반경
+  const pebbles = Array.from({ length: 9 }, () => ({ fx: rand(0.04, 0.96), fy: rand(0.06, 0.9), r: rand(0.25, 0.6), rot: rand(0, 3), e: rand(0.6, 0.9) }));
+  const sprigs = Array.from({ length: 7 }, () => ({ fx: rand(0.05, 0.95), fy: rand(0.08, 0.9), a: rand(0, TAU), n: 3 + (Math.random() * 3 | 0), len: rand(0.7, 1.3) }));
+
+  function makeAnt(s) {
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    const a = { x: 0, y: 0, hd: 0, L, sc: 1, gait: Math.random(), antL: 0, antR: 0, carry: dir < 0 ? 1 : 0,
+                s, dir, v: 0, v0: rand(0.82, 1.2), block: 1, avoid: 0, av: 0, state: 'follow', t: 0, dur: 0,
+                pauseT: 0, nextPause: rand(0.4, 4), kickT: 0, swT: 0, wantHd: 0, turnDir: Math.random() < 0.5 ? -1 : 1,
+                ph: rand(0, TAU), wf: rand(0.5, 1.1) };
+    const p = at(s);
+    a.x = p.x; a.y = p.y; a.hd = p.ang + (dir < 0 ? Math.PI : 0); a.v = SPEED * a.v0;
+    return a;
+  }
+
+  function resize() {
+    const oW = W, oH = H, old = trail.len;
+    W = innerWidth; H = innerHeight; U = Math.min(W, H);
+    const dpr = devicePixelRatio || 1;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    L = clamp(U * 0.05, 11, 22); SPEED = L * 4.2; RW = clamp(U * 0.11, 28, 80);
+    buildTrail();
+    if (!ants.length) {
+      const n = U < 340 ? 16 : 20;
+      for (let i = 0; i < n; i++) ants.push(makeAnt(trail.len * (i + rand(0.15, 0.85)) / n));
+    } else {
+      for (const a of ants) { a.x *= W / oW; a.y *= H / oH; a.s *= trail.len / old; a.L = L; }
+    }
+  }
+  addEventListener('resize', resize);
+  resize();
+
+  // ---------------- 움직임 부품 ----------------
+  /** 원하는 방향으로 "회전 속도 한계 안에서" 돌며 전진. 크게 꺾을수록 속도가 줄어듦 */
+  function steer(a, want, speed, turn, dt) {
+    const d = angDiff(a.hd, want);
+    const dh = clamp(d, -turn * dt, turn * dt);
+    a.hd += dh;
+    const vGoal = speed * clamp(1 - Math.abs(d) / 2.2, 0.25, 1);
+    a.v = damp(a.v, vGoal, vGoal > a.v ? 6 : 15, dt);                  // 출발은 천천히, 멈춤은 빨리
+    a.x += Math.cos(a.hd) * a.v * dt; a.y += Math.sin(a.hd) * a.v * dt;
+    a.gait = (a.gait + (a.v * dt + Math.abs(dh) * 0.3 * L) / (0.95 * L)) % 1;
+  }
+  /** 가다 서다. 멈춰 있는 동안 true */
+  function pauseTick(a, dt, every, len) {
+    if (a.pauseT > 0) { a.pauseT -= dt; return true; }
+    a.nextPause -= dt;
+    if (a.nextPause <= 0) { a.pauseT = rand(len[0], len[1]); a.nextPause = rand(every[0], every[1]); }
+    return a.pauseT > 0;
+  }
+
+  // ---------------- 손대기 ----------------
+  let clock = 0, lastRipple = -1;
+  /** (x0,y0)→(x,y) 로 손이 지나감: 둘레의 냄새를 지우고 가까운 개미를 놀라게 함 */
+  function disturb(x, y, x0, y0) {
+    const n = Math.max(1, Math.ceil(Math.hypot(x - x0, y - y0) / (RW * 0.5)));
+    for (let k = 1; k <= n; k++) {
+      const px = lerp(x0, x, k / n), py = lerp(y0, y, k / n);
+      for (let i = 0; i < trail.pts.length; i++) {
+        const p = trail.pts[i];
+        if ((p.x - px) * (p.x - px) + (p.y - py) * (p.y - py) < RW * RW) { trail.ph[i] = 0; trail.wipe[i] = clock; }
+      }
+      for (const a of ants) {
+        const d = Math.hypot(a.x - px, a.y - py);
+        if (d > RW * 1.3) continue;
+        if (a.state !== 'panic') {
+          a.wantHd = Math.atan2(a.y - py, a.x - px) + rand(-0.8, 0.8);   // 일단 손 반대쪽으로
+          a.kickT = rand(0.12, 0.28); a.v = Math.max(a.v, SPEED * 1.2);
+        }
+        a.state = 'panic'; a.t = 0; a.dur = rand(0.8, 1.6); a.pauseT = 0;
+      }
+    }
+    if (clock - lastRipple > 0.09) { lastRipple = clock; ripples.push({ x, y, t: 0 }); }
+  }
+  const ptr = { x: 0, y: 0, has: false };
+  const auto = { idle: 0, next: 2.5, g: null };      // 아무도 안 건드리면 가끔 스스로 한 번 문지름 (전시용)
+  function onPtr(e) {
+    const x = e.clientX, y = e.clientY;
+    disturb(x, y, ptr.has ? ptr.x : x, ptr.has ? ptr.y : y);
+    ptr.x = x; ptr.y = y; ptr.has = true; auto.idle = -12; auto.g = null;
+  }
+  cv.addEventListener('pointerdown', (e) => { ptr.has = false; onPtr(e); });
+  cv.addEventListener('pointermove', onPtr);
+  cv.addEventListener('pointerleave', () => { ptr.has = false; });
+  cv.addEventListener('pointerup', (e) => { if (e.pointerType !== 'mouse') ptr.has = false; });
+
+  // ---------------- 한 프레임 ----------------
+  function update(dt, now) {
+    clock = now;
+    const N = trail.pts.length, ds = trail.ds;
+
+    // 자동 시연
+    auto.idle += dt;
+    if (!auto.g && auto.idle > auto.next) {
+      const p = at(trail.len * rand(0.3, 0.7)), sg = Math.random() < 0.5 ? -1 : 1, r = RW * 2.4;
+      auto.g = { x0: p.x + Math.sin(p.ang) * r * sg, y0: p.y - Math.cos(p.ang) * r * sg,
+                 x1: p.x - Math.sin(p.ang) * r * sg, y1: p.y + Math.cos(p.ang) * r * sg, t: 0, px: 0, py: 0 };
+      auto.g.px = auto.g.x0; auto.g.py = auto.g.y0;
+    }
+    if (auto.g) {
+      const g = auto.g;
+      g.t += dt / 0.45;
+      const u = smooth(g.t), x = lerp(g.x0, g.x1, u), y = lerp(g.y0, g.y1, u);
+      disturb(x, y, g.px, g.py); g.px = x; g.py = y;
+      if (g.t >= 1) { auto.g = null; auto.idle = 0; auto.next = rand(9, 14); }
+    }
+
+    // 냄새 회복: 끊긴 자리는 양 끝에서부터 천천히 번져 들어옴 (지워진 직후엔 잠깐 그대로)
+    const heal = dt * 0.45 * L / ds;
+    for (let i = 0; i < N; i++) {
+      if (trail.ph[i] >= 1 || now - trail.wipe[i] < 1.4) continue;
+      if ((i > 0 && trail.ph[i - 1] > 0.95) || (i < N - 1 && trail.ph[i + 1] > 0.95) || trail.ph[i] > 0.05) trail.ph[i] = Math.min(1, trail.ph[i] + heal);
+    }
+
+    // 줄 서기: 같은 방향은 앞 개미와 간격 유지, 마주 오면 서로 오른쪽으로 조금 더 비킴
+    for (const a of ants) { a.block = 1; a.avoid = 0; }
+    for (let i = 0; i < ants.length; i++) for (let j = i + 1; j < ants.length; j++) {
+      const A = ants[i], B = ants[j];
+      if (A.state !== 'follow' || B.state !== 'follow') continue;
+      const gap = (B.s - A.s) * A.dir;
+      if (A.dir === B.dir) {
+        if (Math.abs(gap) > 2 * L) continue;
+        const f = gap > 0 ? A : B;
+        f.block = Math.min(f.block, clamp((Math.abs(gap) - 1.05 * L) / (0.5 * L), 0, 1));
+      } else if (gap > -0.8 * L && gap < 2.2 * L) { A.avoid = B.avoid = 0.24 * L; }
+    }
+
+    for (const a of ants) {
+      a.t += dt;
+      let mode = 'walk';
+      if (a.state === 'follow') {
+        const w = 3 * L / ds;
+        a.s = nearest(a.x, a.y, a.s / ds - w, a.s / ds + w).i * ds;       // 길 위 내 위치 (근처에서만 갱신)
+        // 화면 밖 끝에 닿으면 반대쪽 끝에서 다시 들어옴
+        if ((a.dir > 0 && a.s >= trail.len - ds) || (a.dir < 0 && a.s <= ds)) {
+          a.s = a.dir > 0 ? 0 : trail.len;
+          const p = at(a.s); a.x = p.x; a.y = p.y; a.hd = p.ang + (a.dir < 0 ? Math.PI : 0); a.v0 = rand(0.82, 1.2);
+        }
+        if (phAt(a.s + a.dir * 1.4 * L) < 0.35) {
+          // 앞쪽 냄새가 끊김 → 멈칫하고 헤매기 시작
+          a.state = 'search'; a.t = 0; a.pauseT = rand(0.25, 0.6); a.wantHd = a.hd; a.swT = 0;
+        } else {
+          a.av = damp(a.av, a.avoid, 7, dt);
+          const p = at(a.s + a.dir * 1.1 * L);
+          const lat = (L * (0.13 + 0.1 * Math.sin(now * a.wf + a.ph)) + a.av) * a.dir;   // 자기 오른쪽으로 살짝
+          const tx = p.x - Math.sin(p.ang) * lat, ty = p.y + Math.cos(p.ang) * lat;
+          const paused = pauseTick(a, dt, [1.3, 4.5], [0.12, 0.4]);
+          steer(a, Math.atan2(ty - a.y, tx - a.x), paused ? 0 : SPEED * a.v0 * (a.carry ? 0.88 : 1) * a.block, 8, dt);
+          if (paused || a.block < 0.3) mode = 'sweep';
+        }
+      } else if (a.state === 'panic') {
+        // 놀람: 처음엔 아주 빠르게, 방향은 0.1~0.2초마다 툭툭 튐. 시간이 지나며 속도가 가라앉음
+        a.kickT -= dt;
+        if (a.kickT <= 0) { a.kickT = rand(0.07, 0.22); a.wantHd = a.hd + rand(-1.5, 1.5); }
+        if (a.x < L || a.x > W - L || a.y < L || a.y > H - L) a.wantHd = Math.atan2(H / 2 - a.y, W / 2 - a.x) + rand(-0.5, 0.5);
+        steer(a, a.wantHd, SPEED * a.v0 * (1.3 + 1.5 * (1 - a.t / a.dur)), 16, dt);
+        mode = 'alert';
+        if (a.t > a.dur) { a.state = 'search'; a.t = 0; a.wantHd = a.hd; a.swT = 0; a.pauseT = rand(0.15, 0.4); }
+      } else if (a.state === 'search') {
+        const n = nearest(a.x, a.y, 0, N - 1);
+        a.s = n.i * ds;
+        if (a.t > 0.6 && n.d < 0.9 * L && trail.ph[n.i] > 0.6 && phAt(a.s + a.dir * 1.5 * L) > 0.6) {
+          // 발밑과 앞쪽 모두 냄새가 살아 있음 → 다시 줄에 합류
+          a.state = 'follow'; a.pauseT = rand(0.1, 0.3); a.nextPause = rand(1, 3);
+        } else {
+          // 더듬고 다닌 자리엔 냄새가 다시 묻음
+          if (n.d < 1.1 * L) for (let i = Math.max(0, n.i - 2); i <= Math.min(N - 1, n.i + 2); i++) {
+            if (now - trail.wipe[i] > 0.9) trail.ph[i] = Math.min(1, trail.ph[i] + dt * 0.45);
+          }
+          // 갈팡질팡: 0.3~0.7초마다 엉뚱한 쪽으로 꺾되, 시간이 갈수록 "끊긴 길의 앞쪽"으로 끌림
+          a.swT -= dt;
+          if (a.swT <= 0) { a.swT = rand(0.25, 0.7); if (Math.random() < 0.35) a.turnDir *= -1; a.wantHd = a.hd + a.turnDir * rand(0.5, 1.9); }
+          const p = at(clamp(a.s + a.dir * 1.8 * L, 0, trail.len));
+          const pull = Math.max(clamp(0.18 + a.t * 0.1, 0, 0.85), clamp((n.d - 2 * L) / (3 * L), 0, 0.9));
+          const want = a.wantHd + angDiff(a.wantHd, Math.atan2(p.y - a.y, p.x - a.x)) * pull;
+          const paused = pauseTick(a, dt, [0.4, 1.3], [0.15, 0.5]);
+          steer(a, want, paused ? 0 : SPEED * a.v0 * 0.8, 9, dt);
+          mode = paused ? 'sweep' : 'feel';
+        }
+      }
+
+      // 더듬이: 걸을 땐 번갈아 톡톡 / 멈추면 크게 휘젓기 / 놀라면 번쩍 들고 떨기 / 찾을 땐 넓게 더듬기
+      let l, r;
+      if (mode === 'alert')      { l = 0.45 + 0.3 * Math.sin(now * 26 + a.ph); r = 0.45 + 0.3 * Math.sin(now * 23 + a.ph + 2); }
+      else if (mode === 'sweep') { l = 0.4 * Math.sin(now * 5.2 + a.ph); r = 0.4 * Math.sin(now * 4.1 + a.ph + 1.9); }
+      else if (mode === 'feel')  { l = 0.15 + 0.3 * Math.sin(now * 9 + a.ph); r = 0.15 + 0.3 * Math.sin(now * 9 + a.ph + 2.4); }
+      else                       { l = 0.13 * Math.sin(now * 14 + a.ph); r = 0.13 * Math.sin(now * 14 + a.ph + 2.6); }
+      a.antL = damp(a.antL, l, 30, dt); a.antR = damp(a.antR, r, 30, dt);
+    }
+
+    // 헤매는 개미끼리는 겹치지 않게 살짝 밀어냄
+    const k = Math.min(1, 10 * dt);
+    for (let i = 0; i < ants.length; i++) for (let j = i + 1; j < ants.length; j++) {
+      const A = ants[i], B = ants[j];
+      if (A.state === 'follow' && B.state === 'follow') continue;
+      const dx = B.x - A.x, dy = B.y - A.y, d = Math.hypot(dx, dy) || 0.01, o = (0.7 * L - d) * 0.5 * k;
+      if (o > 0) { A.x -= dx / d * o; A.y -= dy / d * o; B.x += dx / d * o; B.y += dy / d * o; }
+    }
+    for (let i = ripples.length - 1; i >= 0; i--) { ripples[i].t += dt / 0.55; if (ripples[i].t >= 1) ripples.splice(i, 1); }
+  }
+
+  // ---------------- 그리기 ----------------
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    // 자갈·풀
+    ctx.fillStyle = theme.muted; ctx.globalAlpha = 0.16;
+    for (const p of pebbles) { ctx.beginPath(); ctx.ellipse(p.fx * W, p.fy * H, p.r * L, p.r * L * p.e, p.rot, 0, TAU); ctx.fill(); }
+    ctx.strokeStyle = theme.leaf; ctx.globalAlpha = 0.55; ctx.lineWidth = Math.max(1, L * 0.09); ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (const g of sprigs) for (let i = 0; i < g.n; i++) {
+      const a = g.a + (i - (g.n - 1) / 2) * 0.5, x = g.fx * W, y = g.fy * H, l = g.len * L * (1 - Math.abs(i - (g.n - 1) / 2) * 0.15);
+      ctx.moveTo(x, y); ctx.quadraticCurveTo(x + Math.cos(a) * l * 0.6, y + Math.sin(a) * l * 0.6, x + Math.cos(a + 0.3) * l, y + Math.sin(a + 0.3) * l);
+    }
+    ctx.stroke();
+
+    // 냄새길: 점마다 세기만큼만 보임 → 지워진 곳은 사라지고, 회복되면 서서히 돌아옴
+    ctx.fillStyle = theme.muted;
+    const step = Math.max(1, Math.round(L * 0.42 / trail.ds)), dr = Math.max(0.8, L * 0.065);
+    for (let i = 0; i < trail.pts.length; i += step) {
+      const ph = trail.ph[i];
+      if (ph < 0.02) continue;
+      ctx.globalAlpha = 0.45 * ph;
+      ctx.beginPath(); ctx.arc(trail.pts[i].x, trail.pts[i].y, dr, 0, TAU); ctx.fill();
+    }
+    // 손 닿은 자리의 물결
+    ctx.strokeStyle = theme.muted; ctx.lineWidth = 1.2;
+    for (const r of ripples) {
+      ctx.globalAlpha = 0.28 * (1 - r.t) * (1 - r.t);
+      ctx.beginPath(); ctx.arc(r.x, r.y, RW * (0.35 + 0.75 * (1 - Math.pow(1 - r.t, 3))), 0, TAU); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    ctx.fillStyle = theme.shade;
+    ctx.beginPath();
+    for (const a of ants) antShadowPath(ctx, a);
+    ctx.fill();
+    for (const a of ants) {
+      const hd = a.hd;
+      a.hd += Math.sin(a.gait * TAU) * 0.07 * Math.min(1.6, a.v / SPEED);      // 걸을 때 좌우로 뒤뚱 (뛸수록 크게)
+      drawAnt(ctx, a);
+      a.hd = hd;
+    }
+  }
+
+  let last = null;
+  function frame(ms) {
+    const dt = last == null ? 0 : clamp((ms - last) / 1000, 0, 0.05);
+    last = ms;
+    if (dt > 0) update(dt, ms / 1000);
+    draw();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>

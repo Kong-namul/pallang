@@ -1,0 +1,41 @@
+/* ============================================================
+   나방 공용 스타일 — examples/moth/*.html 이 base.css 와 같이 씀 (탑뷰)
+   구조:  .mo > .mo-plane > .mo-shadow + .mo-rig(뒷날개·배·앞날개·가슴·더듬이)
+   날개 그림·몸 그림은 moth.js 가 SVG 를 코드로 만들어 --mo-fore 등 변수로 넣어 줌
+
+   날개 한 장 = 세로로 자른 조각이 경첩처럼 이어진 사슬 (span 안에 span, --i = 조각 번호).
+   나비 키트와 같은 방식: 바깥 조각일수록 조금 늦게 따라와 종이 넘기듯 휨.
+   나비와 다른 점: 앞날개·뒷날개가 따로 움직임 → 쉴 때 앞날개가 뒤로 젖혀져(rotateZ)
+   뒷날개와 배를 덮는 삼각 지붕 모양이 됨. 왼쪽 날개는 scaleX(-1) 로 반전.
+   ============================================================ */
+.mo {
+  position: absolute; left: 0; top: 0; width: 0; height: 0;
+  transform-style: preserve-3d; pointer-events: none;
+  --lit-l: 1; --lit-r: 1; --lit-b: 1;      /* 왼날개·오른날개·몸 밝기 (빛 받는 쪽이 밝게) */
+}
+.mo-plane, .mo-rig { position: absolute; transform-style: preserve-3d; }
+
+.mo-wing { position: absolute; left: 0; width: 0; transform-style: preserve-3d; }
+.mo-wing.mo-l { --lit: var(--lit-l); }
+.mo-wing.mo-r { --lit: var(--lit-r); }
+/* transform-origin = 날개 뿌리. rotateY(날갯짓 경첩 = 몸 축) 와 rotateZ(뒤로 젖히기) 가 같은 점을 씀 */
+.mo-wing--f { top: -32px; height: 46px; transform-origin: 0 26px; }
+.mo-wing--h { top: -11px; height: 36px; transform-origin: 0 8px; }
+.mo-wing span { position: absolute; left: 0; top: 0; height: 100%; transform-origin: 0 50%; transform-style: preserve-3d; }
+.mo-wing--f span { width: 5px; }
+.mo-wing--f span span { left: 5px; }
+.mo-wing--h span { width: 6px; }
+.mo-wing--h span span { left: 6px; }
+.mo-wing span > i { position: absolute; left: 0; top: 0; height: 100%; filter: brightness(var(--lit)); }
+.mo-wing--f span > i { width: 5.6px; background: var(--mo-fore) calc(var(--i) * -5px) 0 / 50px 46px no-repeat; }
+.mo-wing--h span > i { width: 6.6px; background: var(--mo-hind) calc(var(--i) * -6px) 0 / 36px 36px no-repeat; }
+
+.mo-abd, .mo-thx, .mo-ant { position: absolute; filter: brightness(var(--lit-b)); }
+.mo-abd { left: -5px; top: -3px; width: 10px; height: 26px; transform-origin: 50% 2px; background: var(--mo-abd) center / 100% 100% no-repeat; }
+.mo-thx { left: -8px; top: -17px; width: 16px; height: 20px; transform: translateZ(5px); background: var(--mo-thx) center / 100% 100% no-repeat; }
+.mo-ant { left: -4px; top: -36px; width: 8px; height: 22px; transform-origin: 50% 100%; background: var(--mo-ant) center / 100% 100% no-repeat; }
+
+.mo-shadow {
+  position: absolute; left: -52px; top: -32px; width: 104px; height: 64px; border-radius: 50%;
+  background: radial-gradient(closest-side, var(--mo-shade, rgba(16, 20, 18, 0.42)), transparent);
+}

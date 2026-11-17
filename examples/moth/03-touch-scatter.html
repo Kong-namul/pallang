@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  나방 03 · 손대면 흩어지기
+  불 켜진 창가에 나방 여럿이 삼각 지붕 자세로 붙어 쉼. 하나를 건드리면 움찔(0.08초) 후 튀어 올라 홱홱 꺾이며 달아나고,
+  반경 안의 이웃은 '거리 ÷ 속도 + 랜덤' 만큼 늦게 파르르 떨다가 따라 날아오름(놀람이 물결처럼 번짐).
+  날아다니다 한 마리씩 창가의 빈자리를 골라 내려앉고, 날개를 두 번에 나눠 접으며 몸을 두 번 고쳐 앉음(Perch).
+  창 쪽 날개는 더 밝고, 유리 위에 앉으면 역광이라 어둡게 보임.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>나방 03 · 손대면 흩어지기</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<link rel="stylesheet" href="../../assets/moth.css">
+<style>
+  body { background: #0f131c; }
+  .stage { perspective: 800px; perspective-origin: 50% 46%; touch-action: none; cursor: pointer; }
+  .hint { color: #98a0b4; }
+  .hint b { color: #f6e2b6; }
+  .mo { --mo-shade: rgba(0, 0, 0, 0.55); }
+</style>
+</head>
+<body>
+<canvas class="fill" id="bg"></canvas>
+<div class="stage" id="stage"></div>
+<p class="hint">나방을 <b>건드리면</b> 옆 나방까지 놀라 흩어졌다가, 하나씩 다시 앉아요</p>
+
+<script src="../../assets/moth.js"></script>
+<script>
+  const { makeMoth, Flit, Perch, loop, clamp, lerp, rand, easeOutCubic, approach, angDiff, noise, RAD, TAU } = MO;
+  const stage = document.getElementById('stage');
+  const cv = document.getElementById('bg'), ctx = cv.getContext('2d');
+  const wall = document.createElement('canvas');
+  let W = 0, H = 0, S = 1;
+  const win = { x: 0, y: 0, w: 0, h: 0, flick: noise(0.8), power: 1 };
+  const onGlass = (x, y, pad = 0) => Math.abs(x - win.x) < win.w / 2 + pad && Math.abs(y - win.y) < win.h / 2 + pad;
+
+  // ---------- 벽과 창 (한 번 그려 두고 매 프레임 복사) ----------
+  function paintWall() {
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    wall.width = Math.round(W * dpr); wall.height = Math.round(H * dpr);
+    const g = wall.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.fillStyle = '#121722'; g.fillRect(0, 0, W, H);
+    const board = 26 * S;                                            // 가로 널빤지
+    for (let y = (win.y % board) - board; y < H; y += board) {
+      g.fillStyle = 'rgba(0,0,0,.34)'; g.fillRect(0, y, W, 1.6 * S);
+      g.fillStyle = 'rgba(150,170,210,.05)'; g.fillRect(0, y + 1.6 * S, W, 1.2 * S);
+    }
+    const R = Math.max(W, H) * 0.7, gl = g.createRadialGradient(win.x, win.y, win.w * 0.3, win.x, win.y, R);   // 창에서 번지는 빛
+    gl.addColorStop(0, 'rgba(255,205,130,.42)'); gl.addColorStop(0.4, 'rgba(255,190,120,.13)'); gl.addColorStop(1, 'rgba(255,190,120,0)');
+    g.globalCompositeOperation = 'lighter'; g.fillStyle = gl; g.fillRect(0, 0, W, H); g.globalCompositeOperation = 'source-over';
+    const x0 = win.x - win.w / 2, y0 = win.y - win.h / 2, fw = 7 * S;
+    g.fillStyle = '#1b1712'; g.fillRect(x0 - fw, y0 - fw, win.w + fw * 2, win.h + fw * 2);                     // 창틀
+    const room = g.createLinearGradient(0, y0, 0, y0 + win.h);
+    room.addColorStop(0, '#ffe2a0'); room.addColorStop(0.6, '#f9c46e'); room.addColorStop(1, '#e79a4a');
+    g.fillStyle = room; g.fillRect(x0, y0, win.w, win.h);
+    for (let side = -1; side <= 1; side += 2) {                      // 커튼 주름
+      for (let k = 0; k < 4; k++) {
+        const cx = win.x + side * (win.w / 2 - (k + 0.5) * win.w * 0.055);
+        g.fillStyle = k % 2 ? 'rgba(160,84,36,.30)' : 'rgba(255,236,196,.26)';
+        g.fillRect(cx - win.w * 0.028, y0, win.w * 0.056, win.h);
+      }
+    }
+    g.fillStyle = 'rgba(120,60,24,.25)'; g.beginPath(); g.ellipse(win.x + win.w * 0.12, y0 + win.h, win.w * 0.2, win.h * 0.2, 0, Math.PI, TAU); g.fill();   // 방 안 가구 그림자
+    g.fillStyle = '#1b1712'; g.fillRect(win.x - 2.2 * S, y0, 4.4 * S, win.h); g.fillRect(x0, win.y - 2.2 * S, win.w, 4.4 * S);                             // 창살
+    g.fillStyle = '#2a241c'; g.fillRect(x0 - fw * 1.8, y0 + win.h + fw, win.w + fw * 3.6, 6 * S);                                                         // 창턱
+    g.fillStyle = 'rgba(255,214,150,.22)'; g.fillRect(x0 - fw * 1.8, y0 + win.h + fw, win.w + fw * 3.6, 1.4 * S);
+  }
+  function drawScene(t) {
+    win.power = 1 + 0.04 * win.flick(t);
+    ctx.drawImage(wall, 0, 0, W, H);
+    ctx.globalCompositeOperation = 'lighter';                        // 불빛이 숨 쉬듯 살짝 흔들림
+    const r = win.w * 1.5, g = ctx.createRadialGradient(win.x, win.y, 0, win.x, win.y, r);
+    const a = 0.07 + 0.06 * (win.power - 1) / 0.04;
+    g.addColorStop(0, `rgba(255,214,150,${clamp(a, 0, 0.2).toFixed(3)})`); g.addColorStop(1, 'rgba(255,214,150,0)');
+    ctx.fillStyle = g; ctx.fillRect(win.x - r, win.y - r, r * 2, r * 2);
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // ---------- 나방 ----------
+  const TONE = ['umber', 'ash', 'clay', 'moss', 'umber', 'ash', 'clay'];
+  const N = innerWidth * innerHeight > 520000 ? 7 : 6;
+  const flock = [];
+  for (let i = 0; i < N; i++) {
+    const m = makeMoth(stage, { tone: TONE[i], shadowShift: 0.9 });
+    const f = new Flit(m, { speed: 205, altBase: 26, altRange: 9 });
+    const p = new Perch(m, f, { flyMin: 1.6 + i * 0.5, flyMax: 2.6 + i * 0.75 });   // 내려앉는 때가 서로 어긋나게
+    const a = { m, f, p, size: rand(0.6, 0.74), delay: -1, from: null, gen: 0, spot: null, glass: 0, fid: null, fidT: rand(1.5, 6) };
+    p.pick = () => (a.spot = freeSpot(a));
+    p.steer = () => {                                                // 창에서 너무 멀어지면 빛 쪽으로 끌림
+      const d = Math.hypot(win.x - m.x, win.y - m.y), far = Math.min(W, H) * 0.4;
+      return d > far ? angDiff(f.theta, Math.atan2(win.y - m.y, win.x - m.x)) * 2.6 * clamp((d - far) / (60 * S), 0, 1) : 0;
+    };
+    p.onTakeoff = () => { a.spot = null; a.fid = null; };
+    flock.push(a);
+  }
+
+  /** 창가의 빈자리: 유리 위(30%) 또는 창 둘레 벽. 다른 나방·포인터와 떨어진 곳 */
+  function freeSpot(me) {
+    const mg = 30 * S, gap = 50 * S;
+    for (let i = 0; i < 40; i++) {
+      let x, y;
+      if (Math.random() < 0.3) { x = win.x + rand(-0.4, 0.4) * win.w; y = win.y + rand(-0.4, 0.4) * win.h; }
+      else {
+        x = win.x + rand(-1, 1) * (win.w * 0.5 + 105 * S); y = win.y + rand(-1, 1) * (win.h * 0.5 + 80 * S);
+        if (onGlass(x, y, 16 * S)) continue;
+      }
+      x = clamp(x, mg, W - mg); y = clamp(y, mg, H - mg - 12);
+      if (ptr.on && Math.hypot(x - ptr.x, y - ptr.y) < 80 * S) continue;
+      const clash = flock.some((o) => o !== me && (Math.hypot(o.m.x - x, o.m.y - y) < gap && o.p.resting || o.spot && Math.hypot(o.spot.x - x, o.spot.y - y) < gap));
+      if (clash && i < 39) continue;
+      const toLight = Math.atan2(win.y - y, win.x - x) * RAD + 90;   // 절반은 빛 쪽을, 절반은 위쪽을 봄
+      const heading = Math.random() < 0.5 ? toLight + rand(-50, 50) : rand(-60, 60), k = 20 * me.m.scale;
+      // (x, y) 는 접은 날개 삼각형의 가운데 → 날개 뿌리(나방의 x, y)는 머리 쪽으로 조금 앞
+      return { x: x + Math.sin(heading / RAD) * k, y: y - Math.cos(heading / RAD) * k, heading };
+    }
+    return null;
+  }
+
+  function resize() {
+    const ow = W, oh = H, ox = win.x, oy = win.y, os = S;
+    W = stage.clientWidth; H = stage.clientHeight;
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    S = clamp(Math.min(W / 520, H / 380), 0.5, 1.6);
+    win.w = 118 * S; win.h = 146 * S; win.x = W * 0.5; win.y = H * 0.45;
+    paintWall();
+    flock.forEach((a) => {
+      a.m.scale = a.size * S; a.p.S = S; a.f.kick = 58 * S;
+      if (ow) { a.m.x = win.x + (a.m.x - ox) * S / os; a.m.y = win.y + (a.m.y - oy) * S / os; }   // 창을 기준으로 자리 유지
+      if (ow && a.p.resting && (a.m.x < 10 || a.m.x > W - 10 || a.m.y < 10 || a.m.y > H - 10)) {      // 화면 밖이면 새 자리
+        const sp = freeSpot(a); if (sp) { a.m.x = sp.x; a.m.y = sp.y; a.m.heading = sp.heading; }
+      }
+    });
+  }
+  const ptr = { x: -999, y: -999, on: false, down: false, speed: 0, px: 0, py: 0 };
+  resize();
+  addEventListener('resize', resize);
+  flock.forEach((a) => {                                             // 처음 자리
+    const sp = freeSpot(a) || { x: win.x, y: win.y, heading: 0 };
+    a.m.x = sp.x; a.m.y = sp.y; a.m.heading = sp.heading;
+  });
+
+  // ---------- 놀람이 번짐 ----------
+  function disturb(a, fx, fy, power, gen) {
+    if (!a.p.takeoff(fx, fy, power)) return;
+    a.delay = -1;
+    if (gen >= 2) return;                                            // 두 다리 건너까지만
+    const R = (150 * S + 30) * (gen ? 0.6 : 1);
+    for (const o of flock) {
+      const d = Math.hypot(o.m.x - a.m.x, o.m.y - a.m.y);
+      if (o !== a && o.p.resting && o.delay < 0 && d < R) {
+        o.delay = 0.07 + d / (520 * S) + rand(0, 0.16);              // 멀수록 늦게
+        o.from = { x: a.m.x, y: a.m.y }; o.gen = gen + 1;
+      }
+    }
+  }
+
+  // ---------- 포인터 ----------
+  const poke = (hard) => {
+    for (const a of flock) if (a.p.resting && a.m.hit(ptr.x, ptr.y, hard ? 12 : 2)) { disturb(a, ptr.x, ptr.y, 1.2, 0); return; }
+  };
+  stage.addEventListener('pointermove', (e) => { ptr.x = e.clientX; ptr.y = e.clientY; ptr.on = true; if (ptr.down) poke(false); });
+  stage.addEventListener('pointerdown', (e) => { ptr.x = ptr.px = e.clientX; ptr.y = ptr.py = e.clientY; ptr.on = true; ptr.down = true; poke(true); });
+  addEventListener('pointerup', (e) => { ptr.down = false; if (e.pointerType !== 'mouse') ptr.on = false; });
+  stage.addEventListener('pointerleave', () => { ptr.on = false; ptr.down = false; });
+
+  let quiet = 0, nextStir = rand(7, 11);
+  loop((dt, t) => {
+    ptr.speed = lerp(ptr.speed, Math.hypot(ptr.x - ptr.px, ptr.y - ptr.py) / Math.max(dt, 1e-3), 0.3);
+    ptr.px = ptr.x; ptr.py = ptr.y;
+    drawScene(t);
+
+    // 한참 조용하면 한 마리가 제풀에 자리를 옮김 (가까운 이웃만 조금 놀람)
+    quiet += dt;
+    if (flock.some((a) => !a.p.resting)) quiet = 0;
+    if (quiet > nextStir) {
+      const a = flock[Math.random() * N | 0], h = a.m.heading / RAD;
+      disturb(a, a.m.x - Math.sin(h) * 20, a.m.y + Math.cos(h) * 20, 0.8, 1);
+      quiet = 0; nextStir = rand(8, 13);
+    }
+
+    for (const a of flock) {
+      const { m, p } = a;
+      const d = ptr.on ? Math.hypot(ptr.x - m.x, ptr.y - m.y) : 9999;
+      let shiver = 0, aim = 0;
+      if (p.state === 'rest') {
+        const wary = clamp(1 - (d - 24 * S) / (70 * S), 0, 1);       // 손이 가까우면 더듬이를 세우고 살짝 떪
+        aim = wary; shiver = wary * 0.16;
+        if (a.delay >= 0) {                                          // 이웃이 놀랐다: 떨다가 따라 날아오름
+          shiver = 0.9; aim = 1;
+          if ((a.delay -= dt) < 0) disturb(a, a.from.x, a.from.y, 0.9, a.gen);
+        } else if (wary > 0.75 && ptr.speed > 700) disturb(a, ptr.x, ptr.y, 1.1, 0);   // 휙 스치기만 해도 놀람
+        // 가끔 혼자 꼼지락: 몸을 조금 틀며 날개를 들썩
+        if (!a.fid && (a.fidT -= dt) <= 0) { a.fid = { t: 0, h: m.heading, dh: rand(4, 10) * (Math.random() < 0.5 ? -1 : 1) }; a.fidT = rand(3, 9); }
+        if (a.fid) {
+          a.fid.t += dt;
+          m.heading = a.fid.h + a.fid.dh * easeOutCubic(a.fid.t / 0.18);
+          m.fold = 1 - 0.13 * Math.sin(Math.PI * clamp(a.fid.t / 0.36, 0, 1));
+          if (a.fid.t > 0.4) a.fid = null;
+        }
+        m.shiver = approach(m.shiver, shiver, shiver > m.shiver ? 30 : 8, dt);
+      }
+      m.antAim = approach(m.antAim, aim, 7, dt);
+      p.step(dt, W, H);
+
+      // 빛: 유리 위에선 역광(어둡게), 벽에선 창 쪽 날개가 밝게
+      a.glass = approach(a.glass, onGlass(m.x, m.y) ? 1 : 0, 6, dt);
+      m.setLight(lerp(0.36, 0.5, a.glass));
+      const k = m.addLight(win.x, win.y, 1.15 * win.power * (1 - a.glass), 150 * S);
+      const sx = m.x - win.x, sy = m.y - win.y, sl = Math.hypot(sx, sy) || 1;
+      m.sunX = sx / sl; m.sunY = sy / sl;
+      m.shadowAlpha = clamp(k * 1.5, 0.15, 1) * (1 - 0.6 * a.glass);
+      m.update(dt); m.render();
+      m.el.style.zIndex = Math.round(m.alt);
+    }
+  });
+</script>
+</body>
+</html>

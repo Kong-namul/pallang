@@ -1,0 +1,423 @@
+<!doctype html>
+<!--
+  완성된 거미줄(Web)을 상속해 '손으로 당긴 변위'를 한 겹 얹음: 잡은 점에서 멀수록 가우시안으로 줄어드는 당김,
+  놓으면 e^(-kt)·cos 로 튕겨 돌아오고, 동시에 pluck()이 실을 따라 바깥으로 퍼지는 감쇠 진동을 만듦.
+  거미는 '파면이 자기 발밑에 닿는 시각'(거리 ÷ 파속)에야 알아챔 → 움찔 → 홱 돌아섬 → 앞다리로 실을 당겨 봄
+  → 달리다 중간에 멈춰 다시 감지 → 그 자리를 더듬다 빈손으로 중심에 복귀. 가만히 두면 날벌레가 걸렸다 빠져나감.
+-->
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>거미 04 · 거미줄 건드리기</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  canvas.fill { touch-action: none; cursor: grab; }
+  canvas.fill.held { cursor: grabbing; }
+</style>
+</head>
+<body>
+<canvas class="fill" id="cv"></canvas>
+<p class="hint">실을 <b>톡</b> 치거나 <b>당겼다 놓아</b> 보세요 · 거미가 진동을 따라와요</p>
+
+<script src="../../assets/spider.js"></script>
+<script>
+  const { Spider, Gait, Web, loop, fitCanvas, theme, onThemeChange, clamp, lerp, rand, easeOut, follow, noise, angDiff, rgba, TAU } = SP;
+  const cv = document.getElementById('cv');
+  let th = theme();
+  let W = 0, H = 0, s = 10, web = null, sp = null, gait = null;
+
+  // ---------- 거미줄 + 손으로 당긴 변위 ----------
+  class TouchWeb extends Web {
+    constructor(o) { super(o); this.pulls = []; }
+    /** (x,y) 지점이 당김 때문에 밀린 양. 잡은 점에서 멀어질수록 가우시안으로 줄어듦 */
+    pullAt(x, y) {
+      let px = 0, py = 0;
+      for (const p of this.pulls) {
+        const k = Math.exp(-((x - p.ax) * (x - p.ax) + (y - p.ay) * (y - p.ay)) / p.s2);
+        px += p.dx * k; py += p.dy * k;
+      }
+      return [px, py];
+    }
+    _pt(g, t, out) {
+      super._pt(g, t, out);
+      if (this.pulls.length) {
+        const q = this.pullAt(out[0], out[1]), k = g.type === 'moor' ? t : 1;   // 계류줄은 화면 밖 끝이 고정
+        out[0] += q[0] * k; out[1] += q[1] * k;
+      }
+      return out;
+    }
+    offset(x, y) {
+      const o = super.offset(x, y);
+      if (this.pulls.length) { const q = this.pullAt(x, y); o[0] += q[0]; o[1] += q[1]; }
+      return o;
+    }
+  }
+
+  // ---------- 상태 ----------
+  const pos = { x: 0, y: 0 };                       // 거미의 '논리' 위치 (움찔 흔들림 제외)
+  const jit = { x: 0, y: 0, vx: 0, vy: 0 };         // 움찔: 스프링으로 되돌아오는 몸 흔들림
+  const mv = { v: 0, omega: 0 };
+  const st = { mode: 'rest', t: 0, T: 0, src: null, headGoal: Math.PI / 2, idleT: 2, last: -9,
+               quick: false, listenAt: -1, cautious: false, go: true, restT: 0, ph: 0 };
+  const auto = { t: 2.2 };                          // 다음 '걸린 벌레'까지 남은 시간
+  let pend = [];                                    // 아직 거미에게 닿지 않은 진동들
+  let bug = null, grab = null, pings = [];
+  // 앞다리 한 쌍: 걷기 자세를 덮어쓰는 목표 (로컬 px)
+  const fl = [0, 1].map(() => ({ x: 0, y: 0, z: 0, fx: 0, fy: 0, fz: 0, gx: 0, gy: 0, gz: 0, k: 1, T: 0.2, hop: 0, wait: 0, pulled: true }));
+  let flMode = 'none', flOne = -1;
+
+  const view = fitCanvas(cv, (v) => { W = v.W; H = v.H; build(); });
+  const ctx = view.ctx;
+  onThemeChange(() => { th = theme(); if (sp) sp.theme = th; });
+
+  function set(mode, T) { st.mode = mode; st.t = 0; st.T = T || 0; }
+
+  /** 화면 크기에 맞춰 거미줄을 새로 치고 거미를 중심에 앉힘 */
+  function build() {
+    const R = Math.min(W * 0.43, H * 0.41);
+    s = clamp(R * 0.085, 6, 15);
+    web = new TouchWeb({ W, H, cx: W * 0.5, cy: H * 0.48, R, s }).complete();
+    pos.x = web.cx; pos.y = web.cy;
+    if (!sp) {
+      sp = new Spider({ size: s, x: pos.x, y: pos.y, heading: Math.PI / 2, shadow: false, reach: 0.64, theme: th });
+      gait = new Gait(sp, { threshold: 0.62, maxLead: 0.38, stepTime: 0.13, minStep: 0.038, lift: 0.4, spread: 1.08,
+                            snap: (x, y) => web.snap(x, y, 0.9 * s) });
+      gait.pose = (i) => fl[i < 2 ? i : 0];
+    }
+    sp.size = s; sp.x = pos.x; sp.y = pos.y; sp.heading = Math.PI / 2;
+    gait.ow.fill(0); gait.reset();
+    jit.x = jit.y = jit.vx = jit.vy = 0; mv.v = mv.omega = 0;
+    pend = []; bug = null; grab = null; pings = []; flMode = 'none';
+    cv.classList.remove('held');
+    set('rest'); st.src = null; st.headGoal = Math.PI / 2; st.idleT = rand(3, 5); auto.t = 2.2;
+  }
+
+  /** 실을 퉁김: 진동을 만들고, 거미가 알아챌 시각을 예약 (파면이 거미까지 가는 시간) */
+  function strike(x, y, amp) {
+    web.pluck(x, y, amp);
+    const d = Math.hypot(x - pos.x, y - pos.y);
+    pend.push({ x, y, at: web.T + d / web.waveSpeed + rand(0.03, 0.08) });
+  }
+
+  // ---------- 포인터: 실 잡기 · 당기기 · 놓기 ----------
+  cv.addEventListener('pointerdown', (e) => {
+    if (grab) return;
+    const x = e.clientX, y = e.clientY;
+    const q = web.snap(x, y, Math.max(30, 2.6 * s));          // 가장 가까운 실 위의 점
+    if (!q && Math.hypot(x - web.cx, y - web.cy) > web.R * 1.1) return;   // 거미줄 밖
+    const a = q || [x, y];
+    const p = { ax: a[0], ay: a[1], dx: 0, dy: 0, gx: 0, gy: 0, s2: 2 * Math.pow(web.R * 0.2, 2), held: true, t: 0, d0x: 0, d0y: 0 };
+    web.pulls.push(p);
+    if (web.pulls.length > 4) web.pulls.shift();
+    grab = { id: e.pointerId, p, x0: x, y0: y };
+    try { cv.setPointerCapture(e.pointerId); } catch (err) { /* 캡처가 안 돼도 동작에는 지장 없음 */ }
+    cv.classList.add('held');
+    strike(a[0], a[1], 0.22 * s);                              // 닿는 순간의 약한 떨림
+    pings.push({ x: a[0], y: a[1], t: 0 });
+    if (pings.length > 6) pings.shift();
+    auto.t = Math.max(auto.t, rand(9, 13));
+  });
+  cv.addEventListener('pointermove', (e) => {
+    if (!grab || e.pointerId !== grab.id) return;
+    const dx = e.clientX - grab.x0, dy = e.clientY - grab.y0, L = Math.hypot(dx, dy) || 1e-6;
+    const M = 2.8 * s, k = M * Math.tanh(L / M) / L;           // 실은 늘어날수록 뻣뻣해짐 → 부드럽게 한계
+    grab.p.gx = dx * k; grab.p.gy = dy * k;
+  });
+  function release(e) {
+    if (!grab || e.pointerId !== grab.id) return;
+    const p = grab.p, L = Math.hypot(p.dx, p.dy);
+    p.held = false; p.t = 0; p.d0x = p.dx; p.d0y = p.dy;
+    if (L < 0.3 * s) { p.d0x = rand(-0.2, 0.2) * s; p.d0y = 0.45 * s; }   // 당기지 않고 톡 친 경우
+    strike(p.ax, p.ay, clamp(0.32 * s + L * 0.28, 0.32 * s, 1.0 * s));       // 많이 당겼다 놓을수록 크게 떨림
+    grab = null;
+    cv.classList.remove('held');
+  }
+  cv.addEventListener('pointerup', release);
+  cv.addEventListener('pointercancel', release);
+
+  // ---------- 거미가 진동을 알아챔 ----------
+  function perceive(S) {
+    const near = st.src && Math.hypot(S.x - st.src[0], S.y - st.src[1]) < 2 * s;
+    const chasing = st.mode === 'alert' || st.mode === 'turn' || st.mode === 'test' || st.mode === 'run' || st.mode === 'listen';
+    if (chasing && near) return;                               // 이미 그쪽으로 가는 중
+    // 움찔: 진동이 온 쪽으로 몸이 톡 쏠렸다 돌아옴 + 배가 출렁
+    const dx = S.x - pos.x, dy = S.y - pos.y, d = Math.hypot(dx, dy) || 1;
+    jit.vx += (dx / d) * 4 * s; jit.vy += (dy / d) * 4 * s;
+    sp.abdV += rand(-3, 3);
+    if ((st.mode === 'search' || st.mode === 'give') && near) { set('search', rand(1.0, 1.6)); return; }
+    st.src = [S.x, S.y];
+    st.quick = web.T - st.last < 2.5;                          // 방금 전에도 놀랐으면 덜 망설임
+    st.last = web.T;
+    set('alert', st.quick ? rand(0.05, 0.12) : rand(0.14, 0.3));
+  }
+
+  // ---------- 앞다리: 실 당겨 보기 · 치켜들고 듣기 · 더듬기 ----------
+  function flSet(mode, one) {
+    if (mode === flMode) return;
+    if (flMode === 'none') {
+      const lead = Math.random() < 0.5 ? 0 : 1;
+      fl.forEach((L, i) => {
+        const f = sp.legs[i].f;
+        L.x = f.x; L.y = f.y; L.z = f.z; L.k = 1; L.pulled = true;
+        L.wait = i === lead ? 0 : rand(0.1, 0.3);
+      });
+      flOne = one == null ? -1 : one;
+    }
+    flMode = mode;
+  }
+  function flGo(L, gx, gy, gz, T, hop) {
+    L.fx = L.x; L.fy = L.y; L.fz = L.z; L.gx = gx; L.gy = gy; L.gz = gz; L.T = T; L.hop = hop; L.k = 0;
+  }
+  function flUpdate(dt) {
+    for (let i = 0; i < 2; i++) {
+      const L = fl[i], side = i ? 1 : -1, leg = sp.legs[i];
+      const on = flMode !== 'none' && (flOne < 0 || flOne === i);
+      gait.ow[i] += ((on ? 1 : 0) - gait.ow[i]) * follow(on ? 22 : 30, dt);
+      if (!on) {
+        if (gait.ow[i] < 0.01) gait.ow[i] = 0;
+        else if (!gait.feet[i].on) {
+          // 놓는 동안 발 디딜 곳을 '지금의 편한 자리'로 맞춰 둠 → 걷기로 매끄럽게 넘어감
+          const q = gait.target(i, 0), f = gait.feet[i];
+          f.x = q[0]; f.y = q[1];
+        }
+        continue;
+      }
+      if (L.k < 1) {
+        L.k = Math.min(1, L.k + dt / L.T);
+        const e = easeOut(L.k, 2.2);
+        L.x = lerp(L.fx, L.gx, e); L.y = lerp(L.fy, L.gy, e);
+        L.z = lerp(L.fz, L.gz, e) + Math.sin(Math.PI * L.k) * L.hop;
+        continue;
+      }
+      L.wait -= dt;
+      if (L.wait > 0) continue;
+      const hx = leg.hx * s, hy = leg.hy * s;
+      if (flMode === 'tug') {
+        // 실을 따라 쭉 뻗어 쥠 → 톡 당김(빠르게) → 천천히 놓음. 간격은 매번 다르게
+        const ex = hx + 1.8 * s, ey = side * 0.16 * s;
+        if (L.pulled) { flGo(L, ex, ey, 0, rand(0.2, 0.32), 0.12 * s); L.pulled = false; L.wait = rand(0.12, 0.6); }
+        else {
+          flGo(L, ex - rand(0.26, 0.4) * s, ey, 0.05 * s, 0.07, 0); L.pulled = true; L.wait = rand(0.04, 0.1);
+          const q = sp.toWorld(ex, ey); web.pluck(q[0], q[1], 0.1 * s);    // 거미가 당긴 실도 살짝 떨림
+        }
+      } else if (flMode === 'raise') {
+        // 앞다리를 실에서 떼고 치켜든 채 진동을 기다림
+        flGo(L, hx + rand(1.2, 1.4) * s, side * rand(0.5, 0.7) * s, rand(0.5, 0.75) * s, 0.16, 0); L.wait = rand(0.25, 0.6);
+      } else {
+        // 더듬기: 진동이 났던 자리 둘레를 번갈아 톡톡
+        const q = sp.toLocal(st.src[0], st.src[1]);
+        const dx = q[0] + rand(-0.5, 0.5) * s - hx, dy = q[1] + side * rand(0, 0.8) * s - hy;
+        const d = Math.hypot(dx, dy) || 1, r = clamp(d, 1.0 * s, 1.95 * s);
+        flGo(L, hx + (dx / d) * r, hy + (dy / d) * r, 0, rand(0.11, 0.18), 0.42 * s); L.wait = rand(0.05, 0.4);
+        const w = sp.toWorld(L.gx, L.gy); web.pluck(w[0], w[1], 0.06 * s);
+      }
+    }
+  }
+
+  /** 급히 달릴 때 이웃 다리를 기다리다 뒤처진 발은 바로 내딛게 → 다리가 늘어져 끌리지 않음 */
+  function catchUp() {
+    const lim = gait.threshold * s * 1.9;
+    gait.feet.forEach((f, i) => {
+      if (f.on || gait.ow[i] > 0.05) return;
+      const q = gait.target(i, 0);
+      if (Math.hypot(f.x - q[0], f.y - q[1]) > lim) { f.on = true; f.t = 0; f.fx = f.x; f.fy = f.y; f.T = gait.minStep; f.ahead = gait.minStep; }
+    });
+  }
+
+  // ---------- 거미 한 스텝 ----------
+  function sim(dt) {
+    st.t += dt;
+    for (let i = pend.length - 1; i >= 0; i--) if (web.T >= pend[i].at) perceive(pend.splice(i, 1)[0]);
+
+    let want = 0, og = 0, legs = 'none', one = null, palp = 1;
+    const to = (p) => Math.atan2(p[1] - pos.y, p[0] - pos.x);
+    const far = (p) => Math.hypot(p[0] - pos.x, p[1] - pos.y);
+
+    if (st.mode === 'rest') {
+      // 중심에서 머리를 아래로 두고 기다림. 가끔 앞다리 하나로 바퀴살을 당겨 보거나 자세를 고침
+      og = clamp(angDiff(sp.heading, st.headGoal) * 3, -2, 2);
+      st.idleT -= dt;
+      if (st.idleT <= 0) {
+        if (Math.random() < 0.6) { set('feel', rand(0.9, 1.7)); st.ph = Math.random() < 0.5 ? 0 : 1; }
+        else st.headGoal = Math.PI / 2 + rand(-0.45, 0.45);
+        st.idleT = rand(2.5, 6);
+      }
+    } else if (st.mode === 'feel') {
+      legs = 'tug'; one = st.ph; palp = 2.5;
+      if (st.t > st.T) set('rest');
+    } else if (st.mode === 'alert') {
+      palp = 0;                                               // 얼어붙음 (예비동작)
+      if (st.t > st.T) set('turn');
+    } else if (st.mode === 'turn') {
+      const diff = angDiff(sp.heading, to(st.src));
+      og = clamp(diff * 11, -9, 9); palp = 3;
+      if (Math.abs(diff) < 0.1 || far(st.src) < 1.2 * s || st.t > 1.2) set('test', st.quick ? rand(0.2, 0.35) : rand(0.55, 1.0));
+    } else if (st.mode === 'test') {
+      // 진동이 온 쪽 실을 앞다리로 당겨 보며 뭐가 걸렸는지 가늠
+      legs = 'tug'; palp = 2;
+      og = clamp(angDiff(sp.heading, to(st.src)) * 6, -4, 4);
+      if (st.t > st.T) {
+        const d = far(st.src);
+        if (d < 2.4 * s) set('search', rand(1.2, 2.0));
+        else {
+          set('run');
+          st.cautious = false;
+          st.listenAt = d > 6.5 * s && Math.random() < 0.75 ? d * rand(0.35, 0.55) : -1;   // 가다가 한 번 멈춰 다시 감지
+        }
+      }
+    } else if (st.mode === 'run') {
+      const d = far(st.src), reach = 1.9 * s, diff = angDiff(sp.heading, to(st.src));
+      og = clamp(diff * 8, -7, 7);
+      const vmax = (st.cautious ? 7.5 : 13) * s * (1 + 0.12 * noise(web.T * 3));
+      want = Math.min(vmax, (d - reach) * 6 + 1.2 * s) * clamp(1.4 - Math.abs(diff) / 1.1, 0.05, 1);
+      if (st.listenAt > 0 && d < st.listenAt) { st.listenAt = -1; set('listen', rand(0.28, 0.6)); }
+      else if (d <= reach + 0.15 * s) { set('search', rand(1.3, 2.1)); st.ph = rand(0, TAU); }
+    } else if (st.mode === 'listen') {
+      legs = 'raise'; palp = 0.3;
+      if (st.t > st.T) { st.cautious = Math.random() < 0.6; set('run'); }
+    } else if (st.mode === 'search') {
+      // 도착: 몸을 좌우로 틀며 앞다리로 더듬음
+      legs = 'probe'; palp = 4;
+      const a = to(st.src) + 0.45 * Math.sin(st.t * 3.1 + st.ph);
+      og = clamp(angDiff(sp.heading, a) * 5, -3, 3);
+      if (st.t > st.T) set('give', rand(0.35, 0.75));
+    } else if (st.mode === 'give') {
+      palp = 0.6;                                             // 아무것도 없음 — 잠깐 멍하니
+      if (st.t > st.T) { set('back'); st.go = true; st.restT = rand(0.6, 1.6); st.headGoal = Math.PI / 2 + rand(-0.2, 0.2); }
+    } else if (st.mode === 'back') {
+      // 중심으로 걸어서 복귀: 서두르지 않고 가다 서다
+      const hub = [web.cx, web.cy], d = far(hub), diff = angDiff(sp.heading, to(hub));
+      og = clamp(diff * 5, -4.5, 4.5);
+      st.restT -= dt;
+      if (st.restT <= 0) { st.go = !st.go; st.restT = st.go ? rand(0.6, 1.6) : rand(0.12, 0.4); }
+      const vmax = 5.5 * s * (1 + 0.2 * noise(web.T * 1.7 + 9));
+      want = st.go ? Math.min(vmax, d * 4 + 0.6 * s) * clamp(1.4 - Math.abs(diff) / 1.2, 0.05, 1) : 0;
+      if (d < 0.25 * s) set('settle');
+    } else if (st.mode === 'settle') {
+      const diff = angDiff(sp.heading, st.headGoal);
+      og = clamp(diff * 4.5, -3.5, 3.5);
+      if (Math.abs(diff) < 0.06 || st.t > 2) { set('rest'); st.idleT = rand(2, 4.5); }
+    }
+
+    flSet(legs, one); flUpdate(dt);
+    sp.palpGain = palp;
+    mv.omega += (og - mv.omega) * follow(14, dt);
+    mv.v += (want - mv.v) * follow(want > mv.v ? 9 : 18, dt);     // 출발은 빠르게, 정지는 더 빠르게
+    sp.heading += mv.omega * dt;
+    pos.x += Math.cos(sp.heading) * mv.v * dt; pos.y += Math.sin(sp.heading) * mv.v * dt;
+    if (st.mode === 'rest' || st.mode === 'feel' || st.mode === 'settle') {
+      const k = follow(1.5, dt); pos.x += (web.cx - pos.x) * k; pos.y += (web.cy - pos.y) * k;
+    }
+    jit.vx += (-220 * jit.x - 20 * jit.vx) * dt; jit.vy += (-220 * jit.y - 20 * jit.vy) * dt;
+    jit.x += jit.vx * dt; jit.y += jit.vy * dt;
+    const nx = pos.x + jit.x, ny = pos.y + jit.y;
+    const vx = (nx - sp.x) / dt, vy = (ny - sp.y) / dt;
+    sp.x = nx; sp.y = ny;
+    catchUp();
+    gait.update(dt, vx, vy, mv.omega);
+    sp.update(dt, mv.omega);
+  }
+
+  // ---------- 걸린 날벌레 (가만히 둬도 살아 있게) ----------
+  function spawnBug() {
+    const g = web.segs[web.spiral[Math.floor(rand(0, web.spiral.length * 0.65))]];
+    const px = (g.a[0] + g.b[0]) / 2, py = (g.a[1] + g.b[1]) / 2;
+    let ux = px - web.cx, uy = py - web.cy;
+    const d = Math.hypot(ux, uy) || 1; ux /= d; uy /= d;
+    const L = Math.max(W, H) * 0.6, side = rand(-0.45, 0.45);
+    bug = { ph: 'in', px, py, ux, uy, sx: px + ux * L - uy * L * side, sy: py + uy * L + ux * L * side,
+            x: 0, y: 0, a: 0, t: 0, T: rand(0.9, 1.3), life: rand(2.8, 4.2), pluckT: 0, shake: 0, w: rand(0, 9), v: 0 };
+    bug.x = bug.sx; bug.y = bug.sy;
+  }
+  function bugUpdate(dt) {
+    const b = bug;
+    b.t += dt; b.w += dt * 55;
+    if (b.ph === 'in') {
+      // 날아오다 실에 턱 걸림
+      const k = Math.min(1, b.t / b.T), e = k * k * (3 - 2 * k);
+      const wob = Math.sin(k * 11 + b.w * 0.02) * (1 - k) * web.R * 0.07;
+      const x = lerp(b.sx, b.px, e) - b.uy * wob, y = lerp(b.sy, b.py, e) + b.ux * wob;
+      if (dt > 0) b.a = Math.atan2(y - b.y, x - b.x);
+      b.x = x; b.y = y;
+      if (k >= 1) { b.ph = 'stuck'; b.t = 0; b.shake = 1; b.pluckT = rand(0.25, 0.6); strike(b.px, b.py, 0.55 * s); }
+    } else if (b.ph === 'stuck') {
+      // 버둥거림: 불규칙한 간격으로 실을 흔듦
+      b.life -= dt; b.pluckT -= dt;
+      b.shake += (0 - b.shake) * follow(5, dt);
+      if (b.pluckT <= 0) { b.shake = 1; b.pluckT = Math.random() < 0.3 ? rand(0.5, 0.9) : rand(0.12, 0.35); strike(b.px, b.py, rand(0.14, 0.3) * s); }
+      const o = web.offset(b.px, b.py);
+      b.x = b.px + o[0] + rand(-1, 1) * b.shake * 0.12 * s; b.y = b.py + o[1] + rand(-1, 1) * b.shake * 0.12 * s;
+      b.a += rand(-1, 1) * b.shake * 0.5;
+      const ds = Math.hypot(pos.x - b.px, pos.y - b.py);
+      if (b.life <= 0 || ds < 4.2 * s) {
+        // 거미가 닿기 직전에 뜯고 달아남 → 거미는 빈자리만 더듬게 됨
+        b.ph = 'out'; b.t = 0; b.v = 2 * s;
+        let ax = b.px - pos.x, ay = b.py - pos.y; const al = Math.hypot(ax, ay) || 1;
+        ax = ax / al + b.ux * 0.6; ay = ay / al + b.uy * 0.6;
+        b.a = Math.atan2(ay, ax) + rand(-0.4, 0.4);
+        web.pluck(b.px, b.py, 0.4 * s);
+      }
+    } else {
+      b.v += (22 * s - b.v) * follow(2.5, dt);
+      b.a += Math.sin(b.t * 13 + b.w * 0.01) * 3 * dt;
+      b.x += Math.cos(b.a) * b.v * dt; b.y += Math.sin(b.a) * b.v * dt;
+      if (b.t > 1.5 || b.x < -30 || b.x > W + 30 || b.y < -30 || b.y > H + 30) { bug = null; auto.t = rand(7, 13); }
+    }
+  }
+  function drawBug() {
+    const b = bug, r = clamp(0.3 * s, 2.2, 4.5);
+    const flap = b.ph === 'stuck' ? b.shake : 1;
+    ctx.save();
+    ctx.translate(b.x, b.y); ctx.rotate(b.a);
+    ctx.globalAlpha = b.ph === 'out' ? clamp(1.3 - b.t / 1.1, 0, 1) : 1;
+    ctx.fillStyle = rgba(th.ink, 0.14 + 0.12 * flap);
+    for (const g of [-1, 1]) {
+      ctx.beginPath();
+      ctx.ellipse(-r * 0.15, g * r * 0.8, r * 1.0, r * (0.3 + 0.35 * flap * Math.abs(Math.sin(b.w + g))), g * (0.45 + 0.4 * flap * Math.sin(b.w * 1.3)), 0, TAU);
+      ctx.fill();
+    }
+    ctx.fillStyle = rgba(th.ink, 0.85);
+    ctx.beginPath(); ctx.ellipse(0, 0, r, r * 0.42, 0, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(r * 0.9, 0, r * 0.36, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+
+  loop((dt) => {
+    if (dt > 0) {
+      web.update(dt);
+      // 당긴 실: 쥐고 있으면 손을 따라오고, 놓으면 감쇠 진동으로 되돌아감
+      for (const p of web.pulls) {
+        if (p.held) { const k = follow(30, dt); p.dx += (p.gx - p.dx) * k; p.dy += (p.gy - p.dy) * k; }
+        else { p.t += dt; const e = Math.exp(-p.t * 5.2) * Math.cos(p.t * 46); p.dx = p.d0x * e; p.dy = p.d0y * e; }
+      }
+      if (web.pulls.some((p) => !p.held && p.t >= 1.3)) web.pulls = web.pulls.filter((p) => p.held || p.t < 1.3);
+      const n = Math.ceil(dt / 0.017);
+      for (let i = 0; i < n; i++) sim(dt / n);
+      if (bug) bugUpdate(dt);
+      else if (st.mode === 'rest' && !grab && (auto.t -= dt) <= 0) spawnBug();
+    }
+    ctx.clearRect(0, 0, W, H);
+    web.draw(ctx, th);
+    if (bug) drawBug();
+    // 건드린 자리 표시
+    for (let i = pings.length - 1; i >= 0; i--) {
+      const p = pings[i]; p.t += dt;
+      const k = p.t / 0.45;
+      if (k >= 1) { pings.splice(i, 1); continue; }
+      ctx.strokeStyle = rgba(th.accent, (1 - k) * 0.7); ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(p.x, p.y, (0.3 + 1.3 * easeOut(k)) * s, 0, TAU); ctx.stroke();
+    }
+    if (grab) {
+      const p = grab.p;
+      ctx.fillStyle = rgba(th.accent, 0.9);
+      ctx.beginPath(); ctx.arc(p.ax + p.dx, p.ay + p.dy, 3, 0, TAU); ctx.fill();
+    }
+    const o = web.offset(sp.x, sp.y);
+    ctx.save(); ctx.translate(o[0], o[1]);
+    sp.draw(ctx, th);
+    ctx.restore();
+  });
+</script>
+</body>
+</html>

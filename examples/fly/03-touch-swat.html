@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  파리 03 · 손대면 약올리기
+  포인터가 '다가오는 속도'(파리 쪽 성분, px/s)를 재서, 빠를수록 더 멀리서 미리 알아채고(반응 반경 = 닿는 거리 + 속도 × 0.13초)
+  손이 닿기 직전에 이륙 → 손 둘레를 약올리듯 한두 바퀴 돌고 → 손에서 먼 곳에 내려앉음.
+  아주 천천히 다가가면 눈치채지 못해 닿을 수 있고, 닿으면 펄쩍 뛰어 화난 나선을 그리며 날아갔다가 다시 앉아 다리를 세게 비빔.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>파리 03 · 손대면 약올리기</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  canvas { touch-action: none; }
+</style>
+</head>
+<body>
+<canvas class="fill" id="air"></canvas>
+<p class="hint"><b>빠르게</b> 다가가면 먼저 달아나요 · <b>아주 천천히</b> 다가가 건드려 보세요</p>
+
+<script>
+  /* ---------- 유틸 ---------- */
+  const TAU = Math.PI * 2;
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const damp = (rate, dt) => 1 - Math.exp(-rate * dt);            // 프레임 속도와 무관한 '따라가기' 계수
+  const angDiff = (a, b) => { let d = (b - a) % TAU; if (d > Math.PI) d -= TAU; if (d < -Math.PI) d += TAU; return d; };
+  const easeOutCubic = (t) => 1 - Math.pow(1 - clamp(t, 0, 1), 3);
+
+  /* ---------- 캔버스 · 색 ---------- */
+  const cv = document.getElementById('air'), ctx = cv.getContext('2d');
+  let W = 0, H = 0, S = 0, K = 1;
+  let col = {}, dark = false, blob = null;
+  let onResize = () => {};                                          // 장면 쪽에서 채움
+  const lo = (a) => (dark ? 'rgba(0,0,0,' : 'rgba(36,48,42,') + a.toFixed(3) + ')';
+  function readColors() {
+    const cs = getComputedStyle(document.documentElement), v = (n) => cs.getPropertyValue(n).trim();
+    col = { ink: v('--ink'), accent: v('--accent'), muted: v('--muted'), wing: '#ffffff' };
+    dark = matchMedia('(prefers-color-scheme: dark)').matches;
+    if (dark) col.wing = '#cfe6e0';
+    // 부드러운 그림자 덩이 (늘려서 몸 그림자·손 그림자로 씀)
+    const sc = dark ? '0,0,0' : '36,48,42';
+    blob = document.createElement('canvas'); blob.width = blob.height = 64;
+    const g = blob.getContext('2d'), gr = g.createRadialGradient(32, 32, 2, 32, 32, 32);
+    gr.addColorStop(0, 'rgba(' + sc + ',.5)'); gr.addColorStop(0.5, 'rgba(' + sc + ',.28)'); gr.addColorStop(1, 'rgba(' + sc + ',0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+  }
+  readColors();
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', readColors);
+
+  function resize() {
+    const nw = innerWidth, nh = innerHeight;
+    if (!nw || !nh) return;
+    const kx = W ? nw / W : 1, ky = H ? nh / H : 1;
+    W = nw; H = nh; S = Math.min(W, H); K = clamp(S / 520, 0.55, 1.6);
+    const dpr = Math.min(devicePixelRatio || 1, 3);
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    onResize(kx, ky);
+  }
+  addEventListener('resize', resize);
+
+  const U = () => 9 * K + 3.5;                                      // 몸 단위 길이(px) — 몸길이는 약 2.6U
+  const margin = () => Math.max(20 * K + 8, S * 0.08);
+  const flightSpeed = () => S * 0.9 + 110;                          // 비행 속력(px/s)
+
+  /* ---------- 포인터: 위치와 속도(px/s) ---------- */
+  const ptr = { x: -9999, y: -9999, on: false, vx: 0, vy: 0, lastT: 0, tap: false };
+  function movePtr(e) {
+    const now = performance.now();
+    if (ptr.on && now - ptr.lastT < 120) {
+      const dtm = Math.max(4, now - ptr.lastT) / 1000;
+      ptr.vx = lerp(ptr.vx, (e.clientX - ptr.x) / dtm, 0.45); ptr.vy = lerp(ptr.vy, (e.clientY - ptr.y) / dtm, 0.45);
+    } else ptr.vx = ptr.vy = 0;
+    ptr.x = e.clientX; ptr.y = e.clientY; ptr.lastT = now; ptr.on = true;
+  }
+  cv.addEventListener('pointermove', movePtr);
+  cv.addEventListener('pointerdown', (e) => { if (e.pointerType !== 'mouse') ptr.tap = true; movePtr(e); });   // 손가락은 '갑자기' 나타남
+  const liftPtr = (e) => { if (e.type !== 'pointerup' || e.pointerType !== 'mouse') ptr.on = false; };
+  cv.addEventListener('pointerup', liftPtr); cv.addEventListener('pointercancel', liftPtr); cv.addEventListener('pointerleave', liftPtr);
+
+  /* ---------- 파리: 상태와 움직임 ----------
+     땅: sit(완전 정지) · rub(다리 비비기) · pivot(홱 돌기) · walk(짧고 빠른 걸음)
+     공중: takeoff → (장면마다 다른 비행: flightBrain) → land                      */
+  let onBored = () => false;        // 앉아서 할 일을 다 했을 때 (true 를 돌려주면 장면이 넘겨받음)
+  let afterTakeoff = () => {};      // 떠오른 직후: 어떤 비행을 할지 정함
+  let afterLanding = () => {};
+  let flightBrain = () => {};
+
+  function makeFly() {
+    return {
+      x: 0, y: 0, vx: 0, vy: 0, h: rand(0, TAU), dir: 0,
+      z: 0, zGoal: 0,                         // 높이 0(바닥)~1(비행) → 크기·그림자 거리로 표현
+      mode: 'sit', mt: 0, dur: 0.6, acts: 2, rubChance: 0.45, mood: 0,
+      wing: 0, wingGoal: 0,                   // 0 접힘 ~ 1 떨림
+      rub: 0, rubGoal: 0, rubPh: 0, rubHind: false, rubRate: 1, rubPause: 0.5,
+      walkPh: 0, pivot: null, sq: 0, sqV: 0,  // sq: 웅크림/착지 충격 스프링
+      trail: [], trailLife: 0.2, tx: 0, ty: 0, seed: rand(0, 99),
+    };
+  }
+  function setMode(f, m, dur) { f.mode = m; f.mt = 0; if (dur != null) f.dur = dur; }
+  // 원하는 속도로 재빨리 맞춤 (rate 가 클수록 급하게 꺾임)
+  function steer(f, dvx, dvy, rate, dt) { const k = damp(rate, dt); f.vx += (dvx - f.vx) * k; f.vy += (dvy - f.vy) * k; }
+
+  function groundNext(f) {
+    const r = Math.random();
+    if (f.mood > 0 || r < f.rubChance) {
+      f.rubHind = !f.mood && Math.random() < 0.22;                   // 가끔은 뒷다리를 비빔
+      f.rubRate = f.mood ? 1.7 : rand(0.85, 1.2); f.rubPause = rand(0.3, 0.7); f.mood = 0;
+      setMode(f, 'rub', rand(0.8, 1.9));
+    } else if (r < f.rubChance + 0.38) {
+      const dh = rand(0.3, 1.5) * (Math.random() < 0.5 ? -1 : 1);
+      f.pivot = { h0: f.h, dh };
+      setMode(f, 'pivot', 0.06 + Math.abs(dh) * 0.03);
+    } else setMode(f, 'sit', rand(0.25, 0.9));
+  }
+  function takeOff(f, dir, startled) {
+    f.dir = dir; f.rubGoal = 0; f.wingGoal = 1;
+    setMode(f, 'takeoff', startled ? 0.025 : 0.09);                  // 웅크리는 예비동작 — 놀랐을 땐 거의 생략
+  }
+  function beginLanding(f, x, y) { f.tx = x; f.ty = y; setMode(f, 'land'); }
+
+  function updateFly(f, dt, t) {
+    f.mt += dt;
+    let sqGoal = 0;
+    switch (f.mode) {
+      case 'sit':                                                      // 완전 정지: 아무것도 움직이지 않음
+        f.rubGoal = 0;
+        if (f.mt > f.dur) { if (--f.acts <= 0 && onBored(f)) break; groundNext(f); }
+        break;
+      case 'rub': {                                                    // 다리 비비기: 빠르기가 고르지 않고 중간에 한 번 뚝 멈춤
+        f.rubGoal = f.mt < f.dur - 0.12 ? 1 : 0;
+        const p = f.mt / f.dur, paused = p > f.rubPause && p < f.rubPause + 0.1;
+        if (!paused) f.rubPh += dt * TAU * 9.5 * f.rubRate * (0.8 + 0.3 * Math.sin(f.mt * 6 + f.seed));
+        if (f.mt > f.dur) setMode(f, 'sit', rand(0.3, 1.2));
+        break;
+      }
+      case 'pivot':                                                    // 걷기 전, 몸을 홱 돌림
+        f.h = f.pivot.h0 + f.pivot.dh * easeOutCubic(f.mt / f.dur);
+        f.walkPh += dt * 50;
+        if (f.mt >= f.dur) setMode(f, 'walk', rand(0.12, 0.34));
+        break;
+      case 'walk': {                                                   // 사다리꼴 속도: 순식간에 출발, 순식간에 멈춤
+        const env = clamp(f.mt / 0.03, 0, 1) * clamp((f.dur - f.mt) / 0.03, 0, 1), v = (60 * K + 45) * env;
+        const nx = f.x + Math.cos(f.h) * v * dt, ny = f.y + Math.sin(f.h) * v * dt, m = margin();
+        if (nx > m && nx < W - m && ny > m && ny < H - m) { f.x = nx; f.y = ny; f.walkPh += dt * 46 * env; } else f.mt = f.dur;
+        if (f.mt >= f.dur) setMode(f, 'sit', Math.random() < 0.35 ? rand(0.06, 0.18) : rand(0.3, 1.1));
+        break;
+      }
+      case 'takeoff':
+        sqGoal = -0.14;
+        if (f.mt >= f.dur) {                                           // 튀어 오름
+          const V = flightSpeed() * 0.9;
+          f.vx = Math.cos(f.dir) * V; f.vy = Math.sin(f.dir) * V; f.zGoal = 1; f.sqV = 3;
+          afterTakeoff(f);
+        }
+        break;
+      case 'land': {                                                   // 급착지: 가까워질수록 속력과 높이가 함께 뚝 떨어짐
+        const dx = f.tx - f.x, dy = f.ty - f.y, d = Math.hypot(dx, dy) || 1;
+        const v = Math.min(flightSpeed(), d * 9 + 50 * K);
+        steer(f, dx / d * v, dy / d * v, 22, dt);
+        f.zGoal = clamp(d / (S * 0.14), 0, 1);
+        if (d < 3 + 2 * K || f.mt > 1.5) {
+          f.vx = f.vy = 0; f.z = f.zGoal = 0; f.wingGoal = 0; f.sqV = -2.4;     // 착지 충격으로 한 번 눌림
+          f.acts = 2 + (Math.random() * 4 | 0);
+          setMode(f, 'sit', rand(0.5, 1.3));
+          afterLanding(f);
+        }
+        break;
+      }
+      default:
+        flightBrain(f, dt, t);
+    }
+    // 공통 적분
+    f.x += f.vx * dt; f.y += f.vy * dt;
+    if (f.z > 0.15) {
+      if (Math.hypot(f.vx, f.vy) > 20) f.h += angDiff(f.h, Math.atan2(f.vy, f.vx)) * damp(26, dt);   // 머리는 속도 방향을 (살짝 늦게) 따라감
+      f.x = clamp(f.x, 6, W - 6); f.y = clamp(f.y, 6, H - 6);
+    }
+    f.z += (f.zGoal - f.z) * damp(f.zGoal > f.z ? 14 : 20, dt);
+    f.wing += (f.wingGoal - f.wing) * damp(f.wingGoal > f.wing ? 60 : 22, dt);
+    f.rub += (f.rubGoal - f.rub) * damp(18, dt);
+    f.sqV += ((sqGoal - f.sq) * 400 - f.sqV * 22) * dt; f.sq += f.sqV * dt;
+    if (f.z > 0.4) f.trail.push({ x: f.x, y: f.y, t });
+    while (f.trail.length && t - f.trail[0].t > f.trailLife) f.trail.shift();
+  }
+
+  /* ============================================================
+     파리 그리기 (위에서 본 모습) — 이 부분만 떼어 가도 됨
+     f: { x, y, h(라디안), z(높이 0~1), wing(0~1), rub(0~1), rubPh, rubHind, walkPh, sq, trail }
+     ============================================================ */
+  // 다리 3쌍: [몸에 붙는 x, 발끝 x, 발끝 y] (몸 기준 좌표: x 앞, y 옆 · 단위 U)
+  const LEGS = [[0.32, 1.05, 0.78], [0.08, 0.12, 1.2], [-0.16, -0.98, 1.0]];
+
+  function drawFlyShadow(f) {
+    const u = U(), k = 1 + f.z * 0.3;
+    ctx.save();
+    ctx.translate(f.x + 1.5 * K + f.z * (10 + 12 * K), f.y + 2 * K + f.z * (14 + 18 * K));   // 높이 뜰수록 멀리, 크고 흐리게
+    ctx.rotate(f.h);
+    ctx.globalAlpha = 0.9 - 0.5 * Math.min(1, f.z);
+    ctx.drawImage(blob, -1.9 * u * k, -1.05 * u * k, 3.4 * u * k, 2.1 * u * k);
+    ctx.restore(); ctx.globalAlpha = 1;
+  }
+  // 비행 잔상: 최근 위치를 이은 선이 꼬리로 갈수록 가늘고 흐려짐
+  function drawTrail(f, t, color) {
+    const tr = f.trail; if (tr.length < 2) return;
+    ctx.lineCap = 'round'; ctx.strokeStyle = color || col.ink;
+    for (let i = 1; i < tr.length; i++) {
+      const a = 1 - (t - tr[i].t) / f.trailLife; if (a <= 0) continue;
+      ctx.globalAlpha = a * a * 0.2; ctx.lineWidth = (0.6 + a * 1.6) * K + 0.3;
+      ctx.beginPath(); ctx.moveTo(tr[i - 1].x, tr[i - 1].y); ctx.lineTo(tr[i].x, tr[i].y); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+  function drawFly(f, t) {
+    const u = U() * (1 + f.z * 0.22), air = clamp(f.z * 1.6, 0, 1);
+    ctx.save(); ctx.translate(f.x, f.y); ctx.rotate(f.h);
+    ctx.scale(u * (1 + f.sq), u * (1 - f.sq * 0.7));                   // 웅크리면 짧고 넓게
+    // 1) 다리
+    ctx.strokeStyle = col.ink; ctx.lineWidth = 0.09; ctx.lineCap = ctx.lineJoin = 'round';
+    ctx.beginPath();
+    for (let i = 0; i < 3; i++) for (const sd of [-1, 1]) {
+      const ax = LEGS[i][0], fx0 = LEGS[i][1], fy0 = LEGS[i][2];
+      const tri = (i + (sd > 0 ? 0 : 1)) % 2 ? 1 : -1;                 // 걷기: 세 다리씩 번갈아(삼각 보행)
+      let fx = fx0 + Math.sin(f.walkPh) * 0.24 * tri, fy = fy0;
+      // 비비기: 앞다리(가끔 뒷다리) 두 개를 가운데로 모아 엇갈려 문지름
+      const rb = f.rub * ((i === 0 && !f.rubHind) || (i === 2 && f.rubHind) ? 1 : 0);
+      if (rb) {
+        fx = lerp(fx, (i === 0 ? 1.28 : -1.5) + Math.sin(f.rubPh) * 0.15 * sd, rb);
+        fy = lerp(fy, 0.07 + 0.03 * Math.cos(f.rubPh * 2), rb);
+      }
+      fx = lerp(fx, ax + (fx0 - ax) * 0.45 - 0.25, air); fy = lerp(fy, fy0 * 0.5, air);     // 비행 중엔 몸 쪽으로 접음
+      ctx.moveTo(ax, 0.2 * sd);
+      ctx.lineTo(lerp(ax, fx, 0.45) + (i === 2 ? -0.1 : 0.12), (lerp(0.2, fy, 0.5) + 0.22 * (1 - rb * 0.6)) * sd);
+      ctx.lineTo(fx, fy * sd);
+    }
+    ctx.stroke();
+    // 2) 배(줄무늬) · 가슴 · 머리 · 겹눈
+    ctx.fillStyle = col.ink;
+    ctx.beginPath(); ctx.ellipse(-0.66, 0, 0.66, 0.43, 0, 0, TAU); ctx.fill();
+    ctx.strokeStyle = dark ? 'rgba(0,0,0,.28)' : 'rgba(255,255,255,.26)'; ctx.lineWidth = 0.06;
+    ctx.beginPath();
+    for (let i = 0; i < 3; i++) {
+      const x = -0.45 - i * 0.26, hh = 0.36 * Math.sqrt(1 - Math.pow((x + 0.66) / 0.66, 2));
+      ctx.moveTo(x, -hh); ctx.quadraticCurveTo(x - 0.08, 0, x, hh);
+    }
+    ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(0.08, 0, 0.47, 0.41, 0, 0, TAU); ctx.fill();
+    const hx = 0.62 - f.rub * 0.04;                                    // 비빌 때 머리를 살짝 숙임
+    ctx.beginPath(); ctx.arc(hx, 0, 0.27, 0, TAU); ctx.fill();
+    ctx.fillStyle = col.accent;
+    for (const sd of [-1, 1]) { ctx.beginPath(); ctx.ellipse(hx + 0.06, 0.19 * sd, 0.17, 0.13, 0.5 * sd, 0, TAU); ctx.fill(); }
+    // 3) 날개: 접힘(등 위에 V자) ↔ 떨림(부채꼴 흐림 + 매 프레임 위치가 바뀌는 날개 두 장)
+    const wingAt = (th, sd, aFill, aLine) => {
+      ctx.beginPath(); ctx.ellipse(0.12 + Math.cos(th) * 0.78, (0.2 + Math.sin(th) * 0.78) * sd, 0.78, 0.3, th * sd, 0, TAU);
+      ctx.globalAlpha = aFill; ctx.fillStyle = col.wing; ctx.fill();
+      ctx.globalAlpha = aLine; ctx.strokeStyle = col.ink; ctx.lineWidth = 0.05; ctx.stroke();
+    };
+    for (const sd of [-1, 1]) {
+      if (f.wing < 0.04) { wingAt(Math.PI - 0.3, sd, 0.5, 0.45); continue; }
+      const mid = lerp(Math.PI - 0.3, 1.75, Math.min(1, f.wing)), amp = 0.62 * f.wing;
+      ctx.beginPath(); ctx.moveTo(0.12, 0.2 * sd);
+      ctx.arc(0.12, 0.2 * sd, 1.56, (mid - amp) * sd, (mid + amp) * sd, sd < 0); ctx.closePath();
+      ctx.globalAlpha = 0.16; ctx.fillStyle = col.wing; ctx.fill();
+      ctx.globalAlpha = 0.06; ctx.fillStyle = col.ink; ctx.fill();
+      wingAt(mid + amp * Math.sin(t * 190 + sd), sd, 0.2, 0.2);
+      wingAt(mid - amp * Math.cos(t * 233 + sd * 2), sd, 0.14, 0.14);
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
+  /* ---------- 장면: 각설탕 하나와 흘린 설탕 알갱이 ---------- */
+  let sugar = { x: 0, y: 0, r: 0, a: 0.3 }, grains = [];
+  function buildScene() {
+    sugar = { x: W * 0.52, y: H * 0.5, r: 9 * K + 5, a: 0.35 };
+    grains = Array.from({ length: 16 }, () => {
+      const a = rand(0, TAU), r = sugar.r * rand(1.5, 4.2);
+      return { x: sugar.x + Math.cos(a) * r, y: sugar.y + Math.sin(a) * r * 0.8, r: rand(0.7, 1.5) * K + 0.4 };
+    });
+  }
+  function drawScene() {
+    const r = sugar.r;
+    ctx.globalAlpha = 0.9; ctx.drawImage(blob, sugar.x - r * 1.5 + 3 * K, sugar.y - r * 1.5 + 5 * K, r * 3.2, r * 3.2); ctx.globalAlpha = 1;
+    ctx.save(); ctx.translate(sugar.x, sugar.y); ctx.rotate(sugar.a);
+    ctx.fillStyle = dark ? '#aebbb4' : '#ffffff';
+    ctx.beginPath(); ctx.rect(-r, -r, 2 * r, 2 * r); ctx.fill();
+    ctx.strokeStyle = lo(0.14); ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = lo(0.07); ctx.fillRect(-r, r * 0.45, 2 * r, r * 0.55);
+    ctx.restore();
+    for (const g of grains) {
+      ctx.fillStyle = lo(0.16); ctx.fillRect(g.x - g.r + 0.6, g.y - g.r + 1, g.r * 2, g.r * 2);
+      ctx.fillStyle = dark ? '#aebbb4' : '#ffffff'; ctx.fillRect(g.x - g.r, g.y - g.r, g.r * 2, g.r * 2);
+    }
+  }
+
+  /* ---------- 파리의 기분: 혼자 옮겨 앉기(hop) · 약올리기(taunt) · 화남(angry) ---------- */
+  const fly = makeFly();
+  fly.rubChance = 0.62;
+  let why = 'hop';
+
+  // 내려앉을 곳: 손에서 멀고, 지금 자리와도 떨어진 곳 (설탕 근처를 조금 더 좋아함)
+  function pickSpot(f) {
+    const m = margin() * 1.6;
+    let best = null, bestSc = -1e9;
+    for (let i = 0; i < 10; i++) {
+      const nearSugar = i < 4, a = rand(0, TAU), rr = sugar.r * rand(2.6, 5);
+      const x = clamp(nearSugar ? sugar.x + Math.cos(a) * rr : rand(m, W - m), m, W - m);
+      const y = clamp(nearSugar ? sugar.y + Math.sin(a) * rr : rand(m, H - m), m, H - m);
+      let sc = (nearSugar ? 0.12 : 0) + rand(0, 0.15) + Math.min(Math.hypot(x - f.x, y - f.y) / S, 0.35);
+      if (ptr.on) sc += Math.min(Math.hypot(x - ptr.x, y - ptr.y) / S, 0.6) * 2;
+      if (sc > bestSc) { bestSc = sc; best = { x, y }; }
+    }
+    return best;
+  }
+  function goLand(f) { const p = pickSpot(f); f.tx = p.x; f.ty = p.y; setMode(f, 'goto'); }
+
+  onBored = (f) => { why = 'hop'; takeOff(f, Math.atan2(H / 2 - f.y, W / 2 - f.x) + rand(-1.2, 1.2), false); return true; };
+  afterTakeoff = (f) => {
+    f.trailLife = 0.2; f.orbDir = Math.random() < 0.5 ? -1 : 1;
+    if (why === 'taunt') { f.cx = ptr.x; f.cy = ptr.y; f.orbLeft = TAU * rand(1.1, 1.8); f.orbR = clamp(S * 0.17, 34, 130); setMode(f, 'taunt'); }
+    else if (why === 'angry') { f.cx = f.x; f.cy = f.y; f.th = f.dir; f.trailLife = 0.34; f.wingGoal = 1.25; setMode(f, 'angry', rand(1.1, 1.5)); }
+    else goLand(f);
+  };
+  afterLanding = (f) => { if (why === 'angry') { f.mood = 1; f.dur = 0.3; } why = 'hop'; f.acts = 4 + (Math.random() * 4 | 0); f.trailLife = 0.2; };
+
+  flightBrain = (f, dt, t) => {
+    const V = flightSpeed();
+    f.zGoal = 1 + 0.1 * Math.sin(t * 9 + f.seed);
+    if (f.mode === 'taunt') {
+      // 손 둘레를 빙빙: 접선 방향 속도 + 반지름을 지키는 보정. 손이 움직이면 따라가며 돈다
+      if (ptr.on) { f.cx = ptr.x; f.cy = ptr.y; }
+      const dx = f.x - f.cx, dy = f.y - f.cy, d = Math.hypot(dx, dy) || 1;
+      const R = f.orbR * (1 + 0.22 * Math.sin(f.mt * 9)), corr = clamp((R - d) / R, -1, 1) * 1.4;
+      steer(f, (-dy / d * f.orbDir + dx / d * corr) * V * 0.8, (dx / d * f.orbDir + dy / d * corr) * V * 0.8, 16, dt);
+      f.orbLeft -= V * 0.8 / Math.max(d, R * 0.5) * dt;
+      if (f.orbLeft <= 0 || f.mt > 2.4) goLand(f);
+    } else if (f.mode === 'angry') {
+      // 화난 나선: 닿은 자리를 중심으로 빠르게 돌며 바깥으로 — 처음엔 촘촘하고 빠르게, 갈수록 크게
+      const p = f.mt / f.dur;
+      f.th += f.orbDir * lerp(19, 7, p) * dt;
+      const r = lerp(S * 0.035, S * 0.2, easeOutCubic(p)) + Math.sin(f.mt * 47) * 2 * K;      // 부르르 떨림
+      let dvx = (f.cx + Math.cos(f.th) * r - f.x) * 16, dvy = (f.cy + Math.sin(f.th) * r - f.y) * 16;
+      const sp = Math.hypot(dvx, dvy), mx = V * 1.5; if (sp > mx) { dvx *= mx / sp; dvy *= mx / sp; }
+      steer(f, dvx, dvy, 30, dt);
+      if (p >= 1) { f.wingGoal = 1; goLand(f); }
+    } else {
+      // goto: 내려앉을 곳으로 — 곧장 가지 않고 좌우로 탁탁 꺾으며 접근
+      const dx = f.tx - f.x, dy = f.ty - f.y, d = Math.hypot(dx, dy) || 1;
+      const zz = (Math.sin(f.mt * 13 + f.seed) > 0 ? 1 : -1) * 0.75;
+      steer(f, (dx / d - dy / d * zz) * V * 0.8, (dy / d + dx / d * zz) * V * 0.8, 24, dt);
+      if (d < S * 0.2 || f.mt > 2) beginLanding(f, f.tx, f.ty);
+    }
+  };
+
+  let ready = false;
+  onResize = (kx, ky) => {
+    buildScene();
+    if (!ready) { ready = true; fly.x = sugar.x + sugar.r * 2.6; fly.y = sugar.y + sugar.r * 1.4; fly.h = Math.PI * 1.1; fly.acts = 5; }
+    else { fly.x *= kx; fly.y *= ky; fly.tx *= kx; fly.ty *= ky; fly.trail.length = 0; }
+  };
+  resize();
+
+  let last = 0;
+  function frame(now) {
+    requestAnimationFrame(frame);
+    const dt = Math.min(0.05, (now - last) / 1000 || 0), t = now / 1000; last = now;
+    if (!W) { resize(); return; }
+    if (now - ptr.lastT > 90) ptr.vx = ptr.vy = 0;                     // 포인터가 멈추면 속도 0
+
+    if (ptr.on && fly.z < 0.05 && fly.mode !== 'takeoff') {
+      const dx = fly.x - ptr.x, dy = fly.y - ptr.y, d = Math.hypot(dx, dy) || 1;
+      let vr = (ptr.vx * dx + ptr.vy * dy) / d;                        // 다가오는 속도 (+ 면 접근 중)
+      if (ptr.tap && d < S * 0.3) vr = 9999;                           // 손가락이 바로 위에 뚝 떨어짐 = 아주 빠른 접근
+      const slow = 55 + 45 * K, touchR = U() * 1.9;
+      if (vr > slow && d < touchR + Math.min(vr * 0.13, S * 0.4)) {    // 빠를수록 멀리서 알아챔 → 닿기 직전에 이륙
+        why = 'taunt'; takeOff(fly, Math.atan2(dy, dx) + rand(-0.5, 0.5), true);
+      } else if (d < touchR) {                                         // 살금살금 → 닿았다!
+        why = 'angry'; fly.sqV = 6; takeOff(fly, Math.atan2(dy, dx), true);
+      } else if (d < S * 0.3 && vr > slow * 0.35 && fly.mode !== 'sit') {
+        setMode(fly, 'sit', rand(0.6, 1.2)); fly.acts++;               // 낌새를 채고 하던 걸 멈춘 채 얼어붙음
+      }
+    }
+    ptr.tap = false;
+    updateFly(fly, dt, t);
+
+    ctx.clearRect(0, 0, W, H);
+    drawScene();
+    if (ptr.on) { const r = S * 0.08 + 12; ctx.globalAlpha = 0.7; ctx.drawImage(blob, ptr.x - r + 5 * K, ptr.y - r + 8 * K, r * 2, r * 2); ctx.globalAlpha = 1; }   // 손 그림자
+    drawFlyShadow(fly);
+    drawTrail(fly, t, why === 'angry' ? col.accent : col.ink);
+    drawFly(fly, t);
+  }
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>

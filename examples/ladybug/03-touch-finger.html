@@ -1,0 +1,439 @@
+<!doctype html>
+<!--
+  무당벌레 03 · 손가락에 올라타기
+  포인터의 '속도'와 '가만히 머문 시간'을 매 프레임 재서 손가락의 의도를 읽음: 가만히 = 내밀기, 천천히 = 태우고 가기, 휙 = 놀람.
+  상태 기계: 산책 → 알아챔(머리만 돌림) → 가다 서다 다가옴 → 손끝을 더듬더듬 → 올라탐 → 끌려가며 버팀(느슨한 스프링으로 뒤따라옴)
+  → 가만히 있으면 손끝 위쪽으로 올라가 두리번 → 딱지날개 탁(오버슈트) → 속날개 펴고 붕, 무거워서 휘청이며 이륙.
+  콕 찌르면 그 반대쪽으로 조약돌처럼 밀리며 다리·더듬이를 숨기고 죽은 척 → 더듬이부터 슬쩍 → 후다닥.
+-->
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>무당벌레 03 · 손가락에 올라타기</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  .stage { touch-action: none; cursor: none; }
+</style>
+</head>
+<body>
+<canvas class="fill" id="cv"></canvas>
+<div class="stage" id="stage"></div>
+<p class="hint">가까이에서 <b>가만히</b> 있으면 올라타요 · 천천히 끌다 멈추면 날아가요 · <b>콕</b> 찌르면 죽은 척</p>
+
+<script src="../../assets/ladybug.js"></script>
+<script>
+  const { makeLadybug, loop, clamp, lerp, rand, ease, smooth, damp, angDiff, RAD, TAU } = LB;
+  const easeOut = (t) => 1 - Math.pow(1 - clamp(t, 0, 1), 3);
+  const stage = document.getElementById('stage');
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  const ground = document.createElement('canvas');
+  let W = 0, H = 0, U = 30, padR = 32;          // U = 무당벌레 몸길이(px), padR = 손끝 반지름
+  let lb = null;
+
+  // ---------------- 상태 ----------------
+  const bug = { x: 0, y: 0, th: 0, v: 0, vT: 0, st: 'go', tm: 1, curve: 0, thT: 0, turnMax: 5, after: null, pAl: 1,
+                alt: 0, flinch: 0, kx: 0, ky: 0, spin: 0, flee: null, hopT: rand(5, 8),
+                ox: 0, oy: 0, ogx: 0, ogy: 0, stillT: 0, flyAt: 2, onPad: false, run: true, ph: 0, seq: 0, fl: null };
+  const ptr = { x: 0, y: 0, on: false, type: 'mouse', acc: 0, ax: 0, ay: 0, spd: 0, vx: 0, vy: 0, still: 0, cool: 0,
+                downAt: 0, moved: 0 };
+  const pad = { x: 0, y: 0, k: 0 };             // 화면에 그리는 손끝
+  const ripples = [];
+
+  // ---------------- 바닥 ----------------
+  function resize() {
+    const first = W === 0;
+    const fx = first ? 0.5 : bug.x / W, fy = first ? 0.55 : bug.y / H;
+    W = stage.clientWidth; H = stage.clientHeight;
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    U = clamp(Math.min(W, H) * 0.11, 22, 46);
+    padR = U * 1.05;
+    bug.x = fx * W; bug.y = fy * H;
+    if (lb) lb.size = U;
+    // 고정된 잔점·떨어진 잎 → 걸어간 거리가 눈에 보이게
+    const cs = getComputedStyle(document.documentElement);
+    const muted = cs.getPropertyValue('--muted').trim() || '#5b6b62', leaf = cs.getPropertyValue('--leaf').trim() || '#5d9b5a';
+    ground.width = cv.width; ground.height = cv.height;
+    const g = ground.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.fillStyle = muted;
+    for (let i = 0, n = Math.round((W * H) / 700); i < n; i++) {
+      g.globalAlpha = rand(0.05, 0.15);
+      g.beginPath(); g.arc(rand(0, W), rand(0, H), rand(0.4, 1.4), 0, TAU); g.fill();
+    }
+    for (let i = 0, n = clamp(Math.round((W * H) / 45000), 3, 12); i < n; i++) {
+      const x = rand(0, W), y = rand(0, H), r = U * rand(0.5, 1.1);
+      g.save(); g.translate(x, y); g.rotate(rand(0, TAU));
+      g.globalAlpha = rand(0.16, 0.3); g.fillStyle = leaf;
+      g.beginPath(); g.moveTo(-r, 0); g.quadraticCurveTo(0, -r * 0.62, r, 0); g.quadraticCurveTo(0, r * 0.62, -r, 0); g.fill();
+      g.globalAlpha = 0.22; g.strokeStyle = '#fff'; g.lineWidth = 1;
+      g.beginPath(); g.moveTo(-r * 0.9, 0); g.lineTo(r * 0.9, 0); g.stroke();
+      g.restore();
+    }
+  }
+  resize();
+  addEventListener('resize', resize);
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', resize);
+
+  lb = makeLadybug(stage, { size: U });
+  bug.th = rand(0, TAU);
+  const dirOf = (th) => ({ x: Math.sin(th), y: -Math.cos(th) });      // th = 0 이면 화면 위쪽, 시계 방향이 +
+  const angTo = (x, y) => Math.atan2(x - bug.x, -(y - bug.y));
+
+  // ---------------- 산책(가다 서다) 동작 조각 ----------------
+  function go(fast) {
+    bug.st = 'go'; bug.tm = fast ? rand(0.7, 1.1) : rand(0.45, 1.7);
+    bug.vT = U * (fast ? rand(4.2, 5) : rand(1.7, 3.1));
+    bug.curve = rand(-0.7, 0.7);
+  }
+  function pause(sec, al) { bug.st = 'pause'; bug.tm = sec; bug.pAl = al || 1; lb.twitch(1.2); }
+  function pivot(to, then) { bug.st = 'pivot'; bug.thT = to; bug.turnMax = rand(4.5, 7.5); bug.after = then || null; }
+  /** 손가락이 사라지거나 너무 빨라짐 → 멈칫하고 한동안 경계 */
+  function giveUp() { pause(rand(0.4, 0.9), 3); ptr.cool = rand(0.8, 1.5); }
+  /** 손가락이 휙 움직여서 미끄러져 떨어짐 → 잠깐 움츠렸다 달아남 */
+  function slip() {
+    const b = bug, m = Math.hypot(ptr.vx, ptr.vy) || 1, k = Math.min(1, (5 * U) / (m * 0.22));
+    b.st = 'dead'; b.tm = rand(0.45, 0.8); b.flinch = 1; b.onPad = false;
+    b.flee = { x: ptr.x, y: ptr.y };
+    b.kx = ptr.vx * 0.22 * k; b.ky = ptr.vy * 0.22 * k; b.spin = rand(-4, 4);
+    ptr.cool = 1.5;
+  }
+  /** 앉을 자리 고르기: 지금 자리에서 minD 이상, 손가락에서는 멀리 */
+  function pickSpot(minD) {
+    const m = 1.6 * U;
+    let best = [W / 2, H / 2];
+    for (let i = 0; i < 14; i++) {
+      const x = rand(m, W - m), y = rand(m, H - m);
+      best = [x, y];
+      if (Math.hypot(x - bug.x, y - bug.y) < minD) continue;
+      if (ptr.on && Math.hypot(x - ptr.x, y - ptr.y) < 3 * U) continue;
+      break;
+    }
+    return best;
+  }
+  function takeOff() {
+    const b = bug, exit = b.onPad;              // 손가락에서 날면 화면 밖으로, 바닥에서 날면 근처로 옮겨 앉음
+    let tx, ty;
+    if (exit) { const a = b.th + rand(-0.4, 0.4); tx = b.x + Math.sin(a) * (W + H); ty = b.y - Math.cos(a) * (W + H); }
+    else [tx, ty] = pickSpot(Math.min(W, H) * 0.35);
+    b.fl = { tx, ty, exit, spd: U * 0.5, t: 0, ph: rand(0, TAU), land: false };
+    b.st = 'fly'; b.onPad = false; b.v = 0;
+  }
+
+  // ---------------- 포인터 ----------------
+  function poke(x, y) {
+    const b = bug;
+    if (b.st === 'fly' || b.st === 'away') return;
+    const d = Math.hypot(x - b.x, y - b.y);
+    if (d > Math.max(ptr.type === 'mouse' ? 1.25 * U : 1.6 * U, 32)) return;
+    ripples.push({ x, y, t: 0 });
+    // 깜짝! 찔린 반대쪽으로 조약돌처럼 밀리고 빙글. 이미 죽은 척 중이면 더 오래
+    if (b.st === 'dead' || b.st === 'wake') b.tm = Math.max(b.tm, 0) + rand(0.6, 1.0);
+    else b.tm = rand(1.4, 2.3);
+    b.st = 'dead'; b.flinch = 1; b.onPad = false; b.after = null;
+    b.flee = { x, y };
+    const ux = d > 2 ? (b.x - x) / d : Math.sin(b.th + Math.PI), uy = d > 2 ? (b.y - y) / d : -Math.cos(b.th + Math.PI);
+    b.kx = ux * U * 2.6; b.ky = uy * U * 2.6;
+    b.spin = rand(2.5, 5) * (Math.random() < 0.5 ? -1 : 1);
+    ptr.cool = 2;
+  }
+  function track(e) {
+    if (ptr.on) { const dx = e.clientX - ptr.x, dy = e.clientY - ptr.y; ptr.acc += Math.hypot(dx, dy); ptr.ax += dx; ptr.ay += dy; ptr.moved += Math.hypot(dx, dy); }
+    else { pad.x = e.clientX; pad.y = e.clientY; ptr.still = 0; }
+    ptr.x = e.clientX; ptr.y = e.clientY; ptr.on = true; ptr.type = e.pointerType || 'mouse';
+  }
+  stage.addEventListener('pointermove', track);
+  stage.addEventListener('pointerdown', (e) => {
+    track(e);
+    ptr.downAt = performance.now(); ptr.moved = 0;
+    if (ptr.type === 'mouse') poke(e.clientX, e.clientY);         // 마우스: 클릭 = 콕
+  });
+  stage.addEventListener('pointerup', (e) => {
+    if (e.pointerType === 'mouse') return;
+    // 터치: 짧게 톡 = 콕 찌르기, 길게 대고 있기 = 손가락 내밀기
+    if (performance.now() - ptr.downAt < 260 && ptr.moved < 12) poke(e.clientX, e.clientY);
+    ptr.on = false;
+  });
+  stage.addEventListener('pointerleave', () => { ptr.on = false; });
+  stage.addEventListener('pointercancel', () => { ptr.on = false; });
+
+  go();
+
+  loop((dt, t) => {
+    const b = bug;
+    // --- 손가락 읽기: 속도(부드럽게 평균)와 가만히 머문 시간
+    if (dt > 0) {
+      ptr.spd = damp(ptr.spd, ptr.acc / dt, 14, dt);
+      ptr.vx = damp(ptr.vx, ptr.ax / dt, 14, dt); ptr.vy = damp(ptr.vy, ptr.ay / dt, 14, dt);
+      ptr.acc = ptr.ax = ptr.ay = 0;
+      ptr.still = ptr.on && ptr.spd < 1.2 * U ? ptr.still + dt : 0;
+      ptr.cool -= dt;
+    }
+    b.tm -= dt;
+    const d = dirOf(b.th);
+    const fd = Math.hypot(ptr.x - b.x, ptr.y - b.y), fAng = angTo(ptr.x, ptr.y);
+    const offer = ptr.on && ptr.spd < 9 * U;                       // 손가락이 있고, 너무 빠르지 않음
+    const mrg = 0.8 * U;
+    let moved = 0, alert = 1, look = 0, tuckT = 0, foldT = 0, altT = 0, squat = 0, seq = false;
+
+    // 산책 중에 끼어드는 것: 손가락 알아채기 · 혼자 날아서 자리 옮기기
+    if ((b.st === 'go' || b.st === 'pause' || b.st === 'pivot') && !b.after) {
+      if (offer && ptr.still > 0.45 && ptr.cool <= 0 && fd < 6.5 * U) { b.st = 'notice'; b.tm = rand(0.35, 0.7); lb.twitch(1.5); }
+      else if (!ptr.on && (b.hopT -= dt) <= 0 && b.st !== 'pivot') { b.st = 'ready'; b.onPad = false; b.ph = 1; b.seq = 0; b.tm = rand(0.6, 1.0); lb.twitch(1.4); }
+    }
+
+    if (b.st === 'go') {
+      b.v = damp(b.v, b.vT, 16, dt);
+      b.curve = damp(b.curve, 0, 0.8, dt) + rand(-1, 1) * 2.4 * dt;       // 살짝 휘는 경로
+      b.th += b.curve * dt;
+      const hx = b.x + d.x * U * 0.7, hy = b.y + d.y * U * 0.7;            // 머리 앞 한 점
+      if (hx < mrg || hx > W - mrg || hy < mrg || hy > H - mrg) {
+        b.v *= 0.4;                                                        // 화면 가장자리: 멈칫하고 안쪽으로 돌아섬
+        pivot(angTo(W * rand(0.3, 0.7), H * rand(0.3, 0.7)) + rand(-0.4, 0.4), () => go());
+      } else if (b.tm <= 0) pause(Math.random() < 0.18 ? rand(0.9, 1.6) : rand(0.18, 0.7));
+    } else if (b.st === 'pause') {
+      b.v = damp(b.v, 0, 24, dt); alert = b.pAl;
+      if (b.tm <= 0) {
+        if (Math.random() < 0.6) {
+          const big = Math.random() < 0.2;
+          pivot(b.th + (Math.random() < 0.5 ? -1 : 1) * (big ? rand(1.7, 2.6) : rand(0.35, 1.4)));
+        } else go();
+      }
+    } else if (b.st === 'pivot') {
+      b.v = damp(b.v, 0, 24, dt);
+      const diff = angDiff(b.th, b.thT), w = clamp(diff * 11, -b.turnMax, b.turnMax);
+      b.th += w * dt;
+      moved += Math.abs(w) * dt * U * 0.42;                                // 제자리에서도 발은 구름
+      if (Math.abs(diff) < 0.04) {
+        if (b.after) { const f = b.after; b.after = null; f(); }
+        else if (Math.random() < 0.35) pause(rand(0.1, 0.3)); else go();
+      }
+    } else if (b.st === 'notice') {
+      // 알아챔: 멈춰서 머리만 손가락 쪽으로 (예비동작)
+      b.v = damp(b.v, 0, 24, dt); alert = 3;
+      look = clamp(angDiff(b.th, fAng) * RAD, -17, 17);
+      if (!offer) giveUp();
+      else if (b.tm <= 0) pivot(fAng + rand(-0.15, 0.15), () => { b.st = 'approach'; b.run = true; b.tm = rand(0.5, 1.1); b.vT = U * rand(2.2, 3.3); });
+    } else if (b.st === 'approach') {
+      // 다가옴: 짧게 달리고 멈춰서 더듬이로 확인하기를 반복
+      const diff = angDiff(b.th, fAng);
+      if (!offer) giveUp();
+      else if (b.run) {
+        b.v = damp(b.v, b.vT * clamp(1.3 - Math.abs(diff), 0.2, 1), 14, dt);
+        const w = clamp(diff * 6, -4.5, 4.5); b.th += w * dt;
+        if (b.tm <= 0) { b.run = false; b.tm = Math.random() < 0.2 ? rand(0.5, 0.9) : rand(0.12, 0.4); lb.twitch(1.2); }
+      } else {
+        b.v = damp(b.v, 0, 24, dt); alert = 3; look = clamp(diff * RAD, -14, 14);
+        if (b.tm <= 0) { b.run = true; b.tm = rand(0.4, 1.1); b.vT = U * rand(2.0, 3.2); }
+      }
+      if (b.st === 'approach' && fd < padR + 0.6 * U) { b.st = 'inspect'; b.tm = rand(0.5, 0.95); b.ph = 0; lb.twitch(1.6); }
+    } else if (b.st === 'inspect') {
+      // 손끝 앞에서 급정지 → 더듬이로 톡톡, 머리를 좌우로
+      b.v = damp(b.v, 0, 22, dt); b.ph += dt; alert = 3.4;
+      const w = clamp(angDiff(b.th, fAng) * 4, -2, 2); b.th += w * dt; moved += Math.abs(w) * dt * U * 0.42;
+      look = 12 * Math.sin(b.ph * 7.5) * Math.min(1, b.ph * 3);
+      if (!offer) giveUp();
+      else if (fd > padR + 1.4 * U) { b.st = 'approach'; b.run = true; b.tm = rand(0.4, 0.9); b.vT = U * 2.6; }
+      else if (b.tm <= 0) b.st = 'climb';
+    } else if (b.st === 'climb') {
+      // 올라탐: 손끝 가운데까지 걸어 들어가며 살짝 떠오름
+      const w = clamp(angDiff(b.th, fAng) * 7, -5, 5); b.th += w * dt;
+      b.v = damp(b.v, U * 1.7, 10, dt);
+      altT = 5 * smooth(padR + 0.6 * U, 0.2 * U, fd);
+      if (!offer) giveUp();
+      else if (fd < 0.3 * U) {
+        b.st = 'ride'; b.v = 0;
+        b.ox = b.ogx = b.x - ptr.x; b.oy = b.ogy = b.y - ptr.y;
+        b.stillT = 0; b.flyAt = rand(1.7, 2.4); b.tm = rand(0.5, 1.2);
+      }
+    } else if (b.st === 'ride') {
+      altT = 5;
+      if (!ptr.on) { pause(rand(0.3, 0.6), 3); ptr.cool = 0.6; }         // 손가락이 사라짐 → 그 자리에 내려섬
+      else if (ptr.spd > 15 * U) slip();
+      else {
+        const moving = ptr.spd > 2 * U;
+        b.stillT = moving ? 0 : b.stillT + dt;
+        if (b.tm <= 0) {                                                   // 손끝 위에서 조금씩 자리를 옮김
+          const a = rand(0, TAU), r = rand(0.1, 0.42) * padR;
+          b.ogx = Math.sin(a) * r; b.ogy = -Math.cos(a) * r; b.tm = rand(0.9, 2.4);
+        }
+        const gx = b.ogx - b.ox, gy = b.ogy - b.oy, gd = Math.hypot(gx, gy);
+        let w = 0;
+        if (moving) {
+          // 끌려가는 동안: 가는 쪽으로 몸을 돌리고 발을 재게 놀려 버팀
+          w = clamp(angDiff(b.th, Math.atan2(ptr.vx, -ptr.vy)) * 3, -2.5, 2.5);
+          moved += ptr.spd * dt * 0.3; alert = 2.2;
+        } else if (gd > 0.06 * U) {
+          const diff = angDiff(b.th, Math.atan2(gx, -gy));
+          w = clamp(diff * 7, -5, 5);
+          const stp = Math.min(gd, U * 1.3 * dt) * clamp(1.2 - Math.abs(diff), 0, 1);
+          b.ox += (gx / gd) * stp; b.oy += (gy / gd) * stp; moved += stp;
+        }
+        b.th += w * dt; moved += Math.abs(w) * dt * U * 0.42;
+        // 손가락을 느슨한 스프링으로 뒤따라감 → 살짝 늦게 끌려옴. 너무 벌어지면 떨어짐
+        const tx = ptr.x + b.ox, ty = ptr.y + b.oy;
+        b.x = damp(b.x, tx, 18, dt); b.y = damp(b.y, ty, 18, dt);
+        if (Math.hypot(tx - b.x, ty - b.y) > 0.95 * U) slip();
+        else if (b.stillT > b.flyAt) {
+          // 가만히 있음 → 손끝 위쪽(높은 곳)으로 올라가 날 준비
+          const a = rand(-0.7, 0.7);
+          b.st = 'ready'; b.onPad = true; b.ph = 0; b.seq = 0; b.thT = a;
+          b.ogx = Math.sin(a) * padR * 0.5; b.ogy = -Math.cos(a) * padR * 0.5;
+        }
+      }
+    } else if (b.st === 'ready') {
+      alert = 3; b.v = damp(b.v, 0, 22, dt);
+      if (b.onPad && !ptr.on) b.onPad = false;
+      altT = b.onPad ? 5 : 0;
+      if (b.onPad && ptr.spd > 15 * U) slip();
+      else if (b.onPad && ptr.spd > 3 * U) { b.st = 'ride'; b.stillT = 0; b.flyAt = rand(1.1, 1.7); b.tm = rand(0.5, 1); }   // 움직이면 다시 버팀
+      else {
+        b.seq += dt;
+        if (b.ph === 0 && b.onPad) {
+          const gx = b.ogx - b.ox, gy = b.ogy - b.oy, gd = Math.hypot(gx, gy), there = gd < 0.05 * U;
+          const diff = angDiff(b.th, there ? b.thT : Math.atan2(gx, -gy));
+          const w = clamp(diff * 8, -6, 6); b.th += w * dt; moved += Math.abs(w) * dt * U * 0.42;
+          if (!there) {
+            const stp = Math.min(gd, U * 1.6 * dt) * clamp(1.2 - Math.abs(diff), 0, 1);
+            b.ox += (gx / gd) * stp; b.oy += (gy / gd) * stp; moved += stp;
+          }
+          if ((there && Math.abs(diff) < 0.1) || b.seq > 1.6) { b.ph = 1; b.seq = 0; b.tm = rand(0.55, 0.95); lb.twitch(1.5); }
+        } else {
+          if (b.ph === 0) { b.ph = 1; b.seq = 0; b.tm = rand(0.5, 0.9); }
+          look = 15 * Math.sin(b.seq * 6.5) * Math.min(1, b.seq * 3);      // 두리번 — 날기 전 예비동작
+          if (b.tm <= 0) { b.st = 'open'; b.seq = 0; }
+        }
+        if (b.onPad) { b.x = damp(b.x, ptr.x + b.ox, 18, dt); b.y = damp(b.y, ptr.y + b.oy, 18, dt); }
+      }
+    } else if (b.st === 'open') {
+      // 이륙 준비: 딱지날개 탁(살짝 넘쳤다 돌아옴) → 속날개 펼침 → 떨림 → 웅크림
+      seq = true; b.seq += dt; b.v = damp(b.v, 0, 22, dt);
+      const k = b.seq;
+      if (b.onPad && !ptr.on) b.onPad = false;
+      altT = b.onPad ? 5 : 0;
+      if (b.onPad) { b.x = damp(b.x, ptr.x + b.ox, 18, dt); b.y = damp(b.y, ptr.y + b.oy, 18, dt); }
+      lb.open = k < 0.15 ? 1.18 * easeOut(k / 0.15) : lerp(1.18, 1, smooth(0.15, 0.32, k));
+      lb.wings = smooth(0.26, 0.5, k);
+      lb.buzz = smooth(0.4, 0.62, k);
+      tuckT = 0.75 * smooth(0.5, 0.78, k); foldT = 0.5 * smooth(0.3, 0.6, k); alert = 0.5;
+      squat = Math.sin(Math.PI * smooth(0.48, 0.82, k));
+      if (k > 0.8) takeOff();
+    } else if (b.st === 'fly') {
+      // 비행: 몸은 항상 실제로 가는 쪽을 봄. 처음엔 무거워 느리게 뜨고 좌우로 휘청
+      seq = true;
+      const f = b.fl; f.t += dt;
+      const dx = f.tx - b.x, dy = f.ty - b.y, dist = Math.hypot(dx, dy);
+      const diff = angDiff(b.th, Math.atan2(dx, -dy));
+      if (!f.exit && !f.land && dist < 4.2 * U) f.land = true;
+      const wob = (1.5 * Math.sin(f.t * 6.3 + f.ph) + 0.9 * Math.sin(f.t * 2.7 + f.ph * 2)) * smooth(0.05, 0.4, f.t);
+      b.th += (clamp(diff * (f.land ? 5 : 2.4), -3.2, 3.2) + wob * (f.land ? 0.25 : 1)) * dt;
+      f.spd = damp(f.spd, f.land ? Math.min(U * 8.5, Math.max(U * 1.1, dist * 2)) : U * 8.5, f.land ? 5 : 1.7, dt);
+      b.alt = damp(b.alt, f.land ? 44 * clamp(dist / (4.2 * U), 0, 1) : 44, f.land ? 6 : f.t < 0.35 ? 0.6 : 2.2, dt);
+      const dd = dirOf(b.th);
+      b.x += dd.x * f.spd * dt; b.y += dd.y * f.spd * dt;
+      lb.open = damp(lb.open, 1, 10, dt); lb.wings = 1; lb.buzz = 1;
+      tuckT = 0.75; foldT = 0.5; alert = 0.5;
+      const out = 2.5 * U;
+      if (f.exit) { if (b.x < -out || b.x > W + out || b.y < -out || b.y > H + out) { b.st = 'away'; b.tm = rand(1.2, 2.2); } }
+      else if (f.land && (dist < 0.4 * U || f.t > 7)) { b.st = 'land'; b.seq = 0; b.v = Math.min(f.spd, U * 2.4); }
+    } else if (b.st === 'away') {
+      // 화면 밖 → 잠시 뒤 다른 쪽에서 날아 들어와 앉음
+      seq = true; tuckT = 0.75; foldT = 0.5;
+      if (b.tm <= 0) {
+        const [tx, ty] = pickSpot(0), side = Math.floor(rand(0, 4)), off = 2.5 * U;
+        b.x = side === 0 ? -off : side === 1 ? W + off : rand(0, W);
+        b.y = side === 2 ? -off : side === 3 ? H + off : rand(0, H);
+        b.th = angTo(tx, ty) + rand(-0.5, 0.5);
+        b.alt = 44;
+        b.fl = { tx, ty, exit: false, spd: U * 7, t: 0.5, ph: rand(0, TAU), land: false };
+        b.st = 'fly';
+      }
+    } else if (b.st === 'land') {
+      // 착지: 살짝 미끄러지며 멈춤 → 속날개를 접어 넣고 → 딱지날개를 반쯤 덮었다가 잠깐 뒤 '딱'
+      seq = true; b.seq += dt;
+      const k = b.seq;
+      b.v = damp(b.v, 0, 7, dt);
+      lb.buzz = 1 - smooth(0, 0.14, k);
+      lb.wings = 1 - smooth(0.12, 0.5, k);
+      lb.open = k < 0.7 ? lerp(1, 0.22, smooth(0.3, 0.58, k)) : lerp(0.22, 0, smooth(0.86, 0.98, k));
+      alert = 2; squat = Math.sin(Math.PI * smooth(0, 0.3, k));
+      if (k > 1.25) { pause(rand(0.4, 0.9)); b.hopT = rand(11, 18); }
+    } else if (b.st === 'dead') {
+      // 죽은 척: 그 자리에 굳음. 다리·더듬이는 몸 밑으로
+      b.v = 0; alert = 0; tuckT = 1; foldT = 1;
+      if (b.tm <= 0) { b.st = 'wake'; b.tm = rand(0.75, 1.0); }
+    } else if (b.st === 'wake') {
+      // 깨어남: 더듬이 먼저 슬쩍 → 다리 → 반대쪽으로 후다닥
+      b.v = 0; alert = 3;
+      tuckT = b.tm > 0.36 ? 1 : 0; foldT = 0;
+      if (b.tm <= 0) {
+        const away = b.flee ? Math.atan2(b.x - b.flee.x, -(b.y - b.flee.y)) + rand(-0.6, 0.6) : b.th + Math.PI;
+        pivot(away, () => go(true));
+      }
+    }
+
+    // 바닥 위 이동 + 밀림(찔렸을 때) + 화면 안에 머물기
+    const air = b.st === 'fly' || b.st === 'away';
+    const carried = b.st === 'ride' || ((b.st === 'ready' || b.st === 'open') && b.onPad);
+    if (!air && !carried) {
+      b.x += (d.x * b.v + b.kx) * dt; b.y += (d.y * b.v + b.ky) * dt;
+      moved += b.v * dt;
+      b.x = clamp(b.x, 0.5 * U, W - 0.5 * U); b.y = clamp(b.y, 0.5 * U, H - 0.5 * U);
+    }
+    b.kx = damp(b.kx, 0, 7, dt); b.ky = damp(b.ky, 0, 7, dt);
+    b.th += b.spin * dt; b.spin = damp(b.spin, 0, 6, dt);
+    if (b.st !== 'fly') b.alt = damp(b.alt, altT, 10, dt);
+
+    // 몸에 반영
+    b.flinch = damp(b.flinch, 0, 9, dt);                                   // 깜짝 놀란 순간: 몸이 움찔 작아졌다 돌아옴
+    lb.tuck = damp(lb.tuck, tuckT, tuckT >= 1 ? 40 : 10, dt);
+    lb.antFold = damp(lb.antFold, foldT, foldT >= 1 ? 40 : 12, dt);
+    lb.look = damp(lb.look, look, 16, dt);
+    lb.alert = alert;
+    if (!seq) { lb.open = damp(lb.open, 0, 18, dt); lb.wings = damp(lb.wings, 0, 14, dt); lb.buzz = damp(lb.buzz, 0, 25, dt); }
+    lb.size = U * (1 - 0.07 * b.flinch - 0.05 * squat);
+    lb.alt = b.alt;
+    lb.x = b.x; lb.y = b.y; lb.heading = b.th * RAD;
+    lb.walk(moved * (b.v < 0 ? -1 : 1));
+    lb.update(dt);
+
+    // --- 그리기: 바닥 → 손끝 → 물결
+    ctx.clearRect(0, 0, W, H);
+    ctx.drawImage(ground, 0, 0, W, H);
+    // 손끝: 가만히 있을수록 또렷하게 내려앉음 (올라타 있으면 항상 또렷)
+    const riding = carried || b.st === 'climb';
+    pad.x = damp(pad.x, ptr.x, 40, dt); pad.y = damp(pad.y, ptr.y, 40, dt);
+    pad.k = damp(pad.k, ptr.on ? (riding ? 1 : 0.5 + 0.5 * smooth(0.1, 0.5, ptr.still)) : 0, ptr.on ? 9 : 14, dt);
+    if (pad.k > 0.02) {
+      const k = pad.k, r = padR * (0.62 + 0.38 * k);
+      ctx.save();
+      ctx.translate(pad.x, pad.y);
+      const sh = ctx.createRadialGradient(U * 0.1, U * 0.18, r * 0.4, U * 0.1, U * 0.18, r * 1.35);
+      sh.addColorStop(0, `rgba(30,24,20,${(0.22 * k).toFixed(3)})`); sh.addColorStop(1, 'rgba(30,24,20,0)');
+      ctx.fillStyle = sh; ctx.beginPath(); ctx.arc(U * 0.1, U * 0.18, r * 1.35, 0, TAU); ctx.fill();
+      const gr = ctx.createRadialGradient(-r * 0.3, -r * 0.4, r * 0.1, 0, 0, r * 1.1);
+      gr.addColorStop(0, `rgba(250,224,205,${(0.95 * k).toFixed(3)})`); gr.addColorStop(1, `rgba(232,186,160,${(0.9 * k).toFixed(3)})`);
+      ctx.fillStyle = gr;
+      ctx.beginPath(); ctx.ellipse(0, 0, r, r * 1.1, 0, 0, TAU); ctx.fill();
+      ctx.strokeStyle = `rgba(176,120,96,${(0.5 * k).toFixed(3)})`; ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.strokeStyle = `rgba(176,120,96,${(0.22 * k).toFixed(3)})`;             // 지문
+      for (let i = 1; i <= 3; i++) { ctx.beginPath(); ctx.ellipse(0, r * 0.12, r * 0.2 * i, r * 0.24 * i, 0, Math.PI * 1.08, Math.PI * 1.92); ctx.stroke(); }
+      ctx.restore();
+    }
+    for (let i = ripples.length - 1; i >= 0; i--) {
+      const r = ripples[i]; r.t += dt;
+      const k = r.t / 0.5;
+      if (k >= 1) { ripples.splice(i, 1); continue; }
+      ctx.globalAlpha = (1 - k) * 0.6; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(r.x, r.y, U * (0.25 + 0.9 * ease(k)), 0, TAU); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    lb.render();
+  });
+</script>
+</body>
+</html>

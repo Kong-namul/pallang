@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  소금쟁이 03 · 손대면 휙 달아나기
+  포인터가 소금쟁이 다리 안쪽까지 닿으면 → 반대쪽으로 2~3번, 좌우로 번갈아 꺾으며(지그재그) 급하게 저어 달아남.
+  손가락을 물에 끌면 지나간 자리마다 작은 물결(항적)이 남아, 다른 소금쟁이들이 그 위에서 출렁이고 한 번 저어 비켜남.
+  잠잠해지면 각자 '제자리(hx, hy)'까지의 거리에 맞춘 세기로 저어 천천히 돌아옴.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>소금쟁이 03 · 손대면 휙 달아나기</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  body {
+    background: radial-gradient(ellipse at 32% 22%,
+      color-mix(in srgb, var(--water) 72%, var(--sky-top)), var(--water) 55%,
+      color-mix(in srgb, var(--water) 84%, var(--ink) 16%));
+  }
+  canvas { touch-action: none; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas class="fill" id="pond"></canvas>
+<p class="hint">소금쟁이를 <b>건드리거나</b> 물을 휘저어 보세요</p>
+
+<script>
+  /* ---------- 유틸 ---------- */
+  const TAU = Math.PI * 2;
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const damp = (rate, dt) => 1 - Math.exp(-rate * dt);            // 프레임 속도와 무관한 '따라가기' 계수
+  const angDiff = (a, b) => { let d = (b - a) % TAU; if (d > Math.PI) d -= TAU; if (d < -Math.PI) d += TAU; return d; };
+  const easeOutCubic = (t) => 1 - Math.pow(1 - clamp(t, 0, 1), 3);
+  const easeInOut = (t) => { t = clamp(t, 0, 1); return t * t * (3 - 2 * t); };
+  const easeOutBack = (t, k) => { t = clamp(t, 0, 1) - 1; return 1 + t * t * ((k + 1) * t + k); };
+
+  /* ---------- 캔버스 · 색 ---------- */
+  const cv = document.getElementById('pond'), ctx = cv.getContext('2d');
+  let W = 0, H = 0, S = 0, K = 1;
+  let col = {}, dark = false, blob = null, dimple = null;
+  let caustics = [], pebbles = [], glints = [];
+  let onResize = () => {};                                          // 장면 쪽에서 채움
+  const hi = (a) => dark ? 'rgba(170,225,235,' + (a * 0.5).toFixed(3) + ')' : 'rgba(255,255,255,' + a.toFixed(3) + ')';   // 빛 받은 물
+  const lo = (a) => (dark ? 'rgba(0,0,0,' : 'rgba(22,58,66,') + a.toFixed(3) + ')';                                      // 그늘진 물
+  function sprite(draw) { const c = document.createElement('canvas'); c.width = c.height = 64; draw(c.getContext('2d')); return c; }
+  function readColors() {
+    const cs = getComputedStyle(document.documentElement), v = (n) => cs.getPropertyValue(n).trim();
+    col = { ink: v('--ink'), accent: v('--accent'), leaf: v('--leaf') };
+    dark = matchMedia('(prefers-color-scheme: dark)').matches;
+    const sc = dark ? '0,0,0' : '22,58,66';
+    // 연못 바닥에 지는 부드러운 그림자 덩이
+    blob = sprite((g) => {
+      const gr = g.createRadialGradient(32, 32, 2, 32, 32, 32);
+      gr.addColorStop(0, 'rgba(' + sc + ',.42)'); gr.addColorStop(0.55, 'rgba(' + sc + ',.22)'); gr.addColorStop(1, 'rgba(' + sc + ',0)');
+      g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+    });
+    // 발밑 수면 눌림: 가운데는 오목해서 어둡고, 빛 오는 쪽(왼쪽 위) 테두리만 반짝
+    dimple = sprite((g) => {
+      const gr = g.createRadialGradient(32, 32, 0, 32, 32, 30);
+      gr.addColorStop(0, 'rgba(' + sc + ',.30)'); gr.addColorStop(0.6, 'rgba(' + sc + ',.14)'); gr.addColorStop(1, 'rgba(' + sc + ',0)');
+      g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+      g.lineCap = 'round'; g.lineWidth = 3;
+      g.strokeStyle = dark ? 'rgba(190,235,245,.5)' : 'rgba(255,255,255,.9)';
+      g.beginPath(); g.arc(32, 32, 22, Math.PI * 0.95, Math.PI * 1.7); g.stroke();
+      g.strokeStyle = 'rgba(' + sc + ',.26)';
+      g.beginPath(); g.arc(32, 32, 23, Math.PI * -0.05, Math.PI * 0.7); g.stroke();
+    });
+  }
+  readColors();
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', readColors);
+
+  function resize() {
+    const nw = innerWidth, nh = innerHeight;
+    if (!nw || !nh) return;
+    const kx = W ? nw / W : 1, ky = H ? nh / H : 1;
+    W = nw; H = nh; S = Math.min(W, H); K = clamp(S / 520, 0.55, 1.6);
+    const dpr = Math.min(devicePixelRatio || 1, 3);
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    buildWater();
+    onResize(kx, ky);
+  }
+  addEventListener('resize', resize);
+
+  /* ---------- 물: 바닥 조약돌 · 일렁이는 빛 그물 · 수면 반짝임 ---------- */
+  function buildWater() {
+    const n = Math.round(clamp(S / 60, 5, 10));
+    caustics = Array.from({ length: n * 2 }, (_, i) => ({
+      vert: i % 2, pos: (Math.floor(i / 2) + rand(0.2, 0.8)) / n,
+      k1: rand(0.008, 0.016) / K, k2: rand(0.02, 0.034) / K, a1: rand(8, 18) * K, a2: rand(3, 8) * K,
+      s1: rand(0.25, 0.6), s2: rand(0.5, 1.1), p1: rand(0, TAU), p2: rand(0, TAU), w: rand(1.5, 4.5) * K, al: rand(0.06, 0.13),
+    }));
+    pebbles = Array.from({ length: Math.round(clamp(W * H / 26000, 5, 22)) }, () => ({
+      x: rand(0, W), y: rand(0, H), rx: rand(6, 20) * K, ry: rand(5, 13) * K, a: rand(0, TAU), al: rand(0.05, 0.11),
+    }));
+    glints = Array.from({ length: Math.round(clamp(W * H / 30000, 6, 26)) }, () => ({
+      x: rand(0, W), y: rand(0, H), len: rand(5, 14) * K, ph: rand(0, TAU), sp: rand(0.6, 1.6),
+    }));
+  }
+  function drawWater(t) {
+    ctx.fillStyle = lo(1);
+    for (const p of pebbles) { ctx.globalAlpha = p.al; ctx.beginPath(); ctx.ellipse(p.x, p.y, p.rx, p.ry, p.a, 0, TAU); ctx.fill(); }
+    // 빛 그물: 사인파 두 개를 겹친 굵고 흐린 선을 가로·세로로 → 천천히 일렁임
+    ctx.strokeStyle = hi(1); ctx.lineCap = ctx.lineJoin = 'round';
+    const step = 16 * K + 6;
+    for (const c of caustics) {
+      const len = c.vert ? H : W, base = c.pos * (c.vert ? W : H);
+      ctx.globalAlpha = c.al * (0.7 + 0.3 * Math.sin(t * c.s2 + c.p1)); ctx.lineWidth = c.w;
+      ctx.beginPath();
+      for (let q = -step; q <= len + step; q += step) {
+        const o = base + Math.sin(q * c.k1 + t * c.s1 + c.p1) * c.a1 + Math.sin(q * c.k2 - t * c.s2 + c.p2) * c.a2;
+        if (c.vert) ctx.lineTo(o, q); else ctx.lineTo(q, o);
+      }
+      ctx.stroke();
+    }
+    ctx.lineWidth = Math.max(1, 1.2 * K);
+    for (const g of glints) {
+      const a = Math.pow(Math.max(0, Math.sin(t * g.sp + g.ph)), 4);
+      if (a < 0.02) continue;
+      ctx.globalAlpha = a * 0.6;
+      ctx.beginPath(); ctx.moveTo(g.x - g.len, g.y); ctx.quadraticCurveTo(g.x, g.y - g.len * 0.25, g.x + g.len, g.y); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /* ---------- 물결 고리 ---------- */
+  const rings = [];
+  function addRing(x, y, o) {
+    rings.push({ x, y, t: -(o.delay || 0), r0: o.r0 || 2 * K, r: o.r, life: o.life || 1, a: o.a == null ? 0.7 : o.a, n: o.n || 1 });
+    if (rings.length > 160) rings.shift();
+  }
+  function drawRings(dt) {
+    for (let i = rings.length - 1; i >= 0; i--) {
+      const r = rings[i]; r.t += dt;
+      if (r.t >= r.life) { rings.splice(i, 1); continue; }
+      if (r.t < 0) continue;
+      const p = r.t / r.life;
+      for (let j = 0; j < r.n; j++) {
+        const pp = p - j * 0.18; if (pp <= 0) break;
+        const rad = lerp(r.r0, r.r, easeOutCubic(pp));                 // 처음엔 빨리, 갈수록 느리게 퍼짐
+        const a = r.a * Math.pow(1 - p, 1.5) * (1 - j * 0.3);
+        ctx.lineWidth = Math.max(0.7, (1.7 - pp) * K);
+        ctx.strokeStyle = lo(a * 0.42); ctx.beginPath(); ctx.arc(r.x + K, r.y + 1.4 * K, rad + 1.2 * K, 0, TAU); ctx.stroke();   // 그늘 쪽
+        ctx.strokeStyle = hi(a); ctx.beginPath(); ctx.arc(r.x, r.y, rad, 0, TAU); ctx.stroke();                                  // 빛 쪽
+      }
+    }
+  }
+
+  /* ---------- 소금쟁이: 상태와 움직임 ---------- */
+  const DRAG = 2.3;                                                  // 물의 저항(1/s) — 작을수록 오래 미끄러짐
+  const REST_MID = 1.02, COCK_MID = 0.58, BACK_MID = 2.12, REST_HIND = 2.5;   // 다리 각(라디안, 0 = 정면)
+  const striders = [], obstacles = [];
+  const unit = (s) => (6.5 * K + 1.5) * s.size;                       // 몸 단위 길이(px)
+  const strokeSpeed = (power) => (S * 0.8 + 70) * power;              // 한 번 저어 얻는 속력(px/s)
+  const glideDist = (power) => strokeSpeed(power) / DRAG;             // 그 속력으로 미끄러지는 거리
+  const margin = () => Math.max(26 * K, S * 0.09);
+  let waveAt = () => 0;                                               // (x, y) 지점 수면의 출렁임 높이 — 장면에서 바꿈
+
+  function makeStrider(x, y) {
+    return {
+      x, y, hx: x, hy: y, vx: 0, vy: 0, h: rand(0, TAU),
+      state: 'rest', st: 0, wait: rand(0.3, 2), cool: 0,
+      base: 0, goal: 0, zig: 0, queue: 0, power: 1, hurry: 0, recover: 0.4, gap: 0.1, turn: null, fired: false, pp: 0,
+      aL: REST_MID, aR: REST_MID, hind: REST_HIND, hindV: 0,          // 실제로 그려지는 다리 각
+      press: 0, lean: 0, leanGoal: 0, dip: 0, dipV: 0, z: 0,
+      size: rand(0.86, 1.12), seed: rand(0, 99),
+    };
+  }
+  function setState(s, st) { s.state = st; s.st = 0; }
+
+  // 발끝의 화면 좌표 (물결을 남길 자리)
+  function footWorld(s, sd, hindLeg) {
+    const u = unit(s), a = hindLeg ? s.hind : (sd < 0 ? s.aL : s.aR), len = hindLeg ? 3.1 : 3.4, ax = hindLeg ? -0.15 : 0.35;
+    const lx = ax + Math.cos(a) * len, ly = (0.2 + Math.sin(a) * len) * sd, c = Math.cos(s.h), sn = Math.sin(s.h);
+    return { x: s.x + (lx * c - ly * sn) * u, y: s.y + (lx * sn + ly * c) * u };
+  }
+
+  // 도착 지점 점수: 가장자리·다른 소금쟁이·장애물을 피함
+  function scoreSpot(s, ex, ey) {
+    const m = margin();
+    let sc = -Math.max(m - ex, ex - (W - m), m - ey, ey - (H - m), 0) / S * 14;
+    for (const o of striders) if (o !== s) { const d = Math.hypot(o.x - ex, o.y - ey); if (d < S * 0.22) sc -= (S * 0.22 - d) / S * 7; }
+    for (const ob of obstacles) {
+      const dx = ex - s.x, dy = ey - s.y, q = clamp(((ob.x - s.x) * dx + (ob.y - s.y) * dy) / (dx * dx + dy * dy || 1), 0, 1);
+      if (Math.hypot(s.x + dx * q - ob.x, s.y + dy * q - ob.y) < ob.r + unit(s) * 3.5) sc -= 4;      // 가는 길이 장애물을 스침
+    }
+    return sc;
+  }
+  // 어슬렁거리기: 후보 방향 몇 개 중 가장 한적한 쪽으로 1~2번 젓기
+  function planWander(s) {
+    let best = null, bestSc = -1e9;
+    for (let i = 0; i < 10; i++) {
+      const dir = i < 4 ? s.h + rand(-1.2, 1.2) : rand(0, TAU);
+      const n = Math.random() < 0.28 ? 2 : 1, power = rand(0.5, 1), dist = glideDist(power) * (n > 1 ? 1.75 : 1);
+      const sc = scoreSpot(s, s.x + Math.cos(dir) * dist, s.y + Math.sin(dir) * dist) + (i < 4 ? 0.3 : 0) + rand(0, 0.4);
+      if (sc > bestSc) { bestSc = sc; best = { dir, n, power }; }
+    }
+    return best;
+  }
+  let planNext = planWander;
+  // 달아날 방향: 원하는 각 주변에서 막히지 않은 쪽
+  function bestDir(s, ang, spread, dist) {
+    let best = ang, bestSc = -1e9;
+    for (let i = 0; i < 7; i++) {
+      const dir = ang + (i ? rand(-spread, spread) : 0);
+      const sc = scoreSpot(s, s.x + Math.cos(dir) * dist, s.y + Math.sin(dir) * dist) - Math.abs(dir - ang) * 0.5;
+      if (sc > bestSc) { bestSc = sc; best = dir; }
+    }
+    return best;
+  }
+
+  // 명령: dir 쪽으로 돌아서 n번 젓기. o = { zig: 지그재그 각, hurry: 급하게, delay: 반응 지연 }
+  function order(s, dir, n, power, o) {
+    o = o || {};
+    s.base = dir; s.zig = o.zig || 0; s.goal = dir + s.zig;
+    s.queue = n; s.power = power; s.hurry = o.hurry ? 1 : 0;
+    s.recover = s.hurry ? rand(0.12, 0.18) : rand(0.3, 0.5);
+    s.gap = s.hurry ? rand(0, 0.05) : rand(0.03, 0.3);
+    if (o.delay) { setState(s, 'react'); s.wait = o.delay; } else beginTurn(s);
+  }
+  function beginTurn(s) {
+    const dh = angDiff(s.h, s.goal);
+    if (Math.abs(dh) < 0.12) { s.h += dh; setState(s, 'cock'); return; }
+    s.turn = { h0: s.h, dh, dur: s.hurry ? 0.06 + Math.abs(dh) * 0.03 : 0.12 + Math.abs(dh) * 0.07 };
+    setState(s, 'turn');
+    const f = footWorld(s, dh > 0 ? -1 : 1, false);                  // 바깥쪽 발 하나로 물을 밀어 돈다
+    addRing(f.x, f.y, { r: (7 + 5 * Math.min(1.5, Math.abs(dh))) * K, life: 0.7, a: 0.45 });
+  }
+
+  function updateStrider(s, dt, t) {
+    s.st += dt; s.cool -= dt;
+    const fx = Math.cos(s.h), fy = Math.sin(s.h);
+    let mL = REST_MID, mR = REST_MID;                                  // 이번 프레임 가운뎃다리 목표 각
+    s.press = 0; s.leanGoal = 0;
+    switch (s.state) {
+      case 'rest':                                                     // 멈춤
+        if (s.st > s.wait) {
+          const plan = planNext(s);
+          if (plan) order(s, plan.dir, plan.n, plan.power);
+          else { s.st = 0; s.wait = rand(0.5, 2.2); }
+        }
+        break;
+      case 'react':                                                    // 놀란 뒤 아주 짧은 굳음
+        if (s.st > s.wait) beginTurn(s);
+        break;
+      case 'turn': {                                                   // 젓기 사이의 제자리 회전
+        const p = s.st / s.turn.dur;
+        s.h = s.turn.h0 + s.turn.dh * easeOutBack(p, 1.2);
+        const sw = Math.sin(Math.PI * clamp(p, 0, 1)) * Math.min(1, Math.abs(s.turn.dh)) * 0.75;
+        if (s.turn.dh > 0) mL += sw; else mR += sw;
+        if (p >= 1) { s.h = s.turn.h0 + s.turn.dh; setState(s, 'settle'); s.wait = s.hurry ? 0.015 : rand(0.05, 0.28); }
+        break;
+      }
+      case 'settle':
+        if (s.st > s.wait) setState(s, 'cock');
+        break;
+      case 'cock': {                                                   // 예비동작: 다리를 앞으로 당기고 몸은 살짝 뒤로
+        const dur = s.hurry ? 0.045 : 0.13, p = easeInOut(s.st / dur);
+        mL = mR = lerp(REST_MID, COCK_MID, p);
+        s.leanGoal = -1.3 * p;
+        if (s.st >= dur) { setState(s, 'stroke'); s.fired = false; s.pp = 0; }
+        break;
+      }
+      case 'stroke': {                                                 // 80ms 젓기 → 속력이 한꺼번에 붙음
+        const p = clamp(s.st / 0.08, 0, 1), e = easeOutCubic(p);
+        mL = mR = lerp(COCK_MID, BACK_MID, p * p);
+        const dv = strokeSpeed(s.power) * (e - s.pp); s.pp = e;
+        s.vx += fx * dv; s.vy += fy * dv;
+        s.press = 1; s.leanGoal = 1.6;
+        if (!s.fired && p > 0.4) {
+          s.fired = true; s.dipV -= 30; s.hindV += 7;
+          for (const sd of [-1, 1]) {                                  // 두 발 자리에 물결 한 쌍
+            const f = footWorld(s, sd, false);
+            addRing(f.x, f.y, { r: (15 + 16 * s.power) * K, life: 0.9 + 0.5 * s.power, a: 0.55 + 0.3 * s.power, n: 2 });
+          }
+        }
+        if (p >= 1) { s.queue--; setState(s, 'glide'); }
+        break;
+      }
+      case 'glide': {                                                  // 긴 미끄러짐, 다리는 천천히 제자리로
+        mL = mR = lerp(BACK_MID, REST_MID, easeInOut((s.st - 0.04) / s.recover));
+        if (s.queue > 0) {
+          if (s.st > s.recover + s.gap) {
+            if (s.zig) { s.zig = -s.zig; s.goal = s.base + s.zig; }
+            beginTurn(s);
+          }
+        } else if (Math.hypot(s.vx, s.vy) < 6 * K && s.st > s.recover) {
+          setState(s, 'rest'); s.hurry = 0;
+          s.wait = Math.random() < 0.15 ? rand(2.5, 4.5) : rand(0.35, 2.2);
+        }
+        break;
+      }
+    }
+    // 가운뎃다리: 목표 각을 아주 빠르게 따라감 (상태가 끊겨도 튀지 않게) + 쉴 때의 미세한 숨
+    const breathe = Math.sin(t * 0.9 + s.seed) * 0.025;
+    s.aL += (mL + breathe - s.aL) * damp(70, dt);
+    s.aR += (mR - breathe * 0.6 - s.aR) * damp(70, dt);
+    // 뒷다리: 속력이 붙으면 뒤로 모였다가 스프링처럼 돌아옴 (뒤따름)
+    const hindGoal = REST_HIND + clamp(Math.hypot(s.vx, s.vy) / (S * 0.9 + 80), 0, 1) * 0.34;
+    s.hindV += ((hindGoal - s.hind) * 150 - s.hindV * 13) * dt; s.hind += s.hindV * dt;
+    // 몸통: 다리 사이에서 앞뒤로 쏠림 + 젓는 순간 수면을 눌렀다 되튐
+    s.lean += (s.leanGoal - s.lean) * damp(s.leanGoal ? 40 : 9, dt);
+    s.dipV += (-s.dip * 190 - s.dipV * 13) * dt; s.dip += s.dipV * dt;
+    s.z = s.dip + waveAt(s.x, s.y);
+    // 물의 저항 → 지수적으로 느려지는 미끄러짐
+    const k = Math.exp(-DRAG * dt);
+    s.vx *= k; s.vy *= k;
+    s.vx += Math.cos(t * 0.37 + s.seed) * 5 * K * dt; s.vy += Math.sin(t * 0.29 + s.seed * 1.7) * 5 * K * dt;   // 잔잔한 물살
+    // 가장자리·장애물은 부드럽게 밀어냄
+    const m = margin() * 0.6, e = unit(s) * 1.5;
+    if (s.x < m) s.vx += (m - s.x) * 60 * dt; else if (s.x > W - m) s.vx -= (s.x - (W - m)) * 60 * dt;
+    if (s.y < m) s.vy += (m - s.y) * 60 * dt; else if (s.y > H - m) s.vy -= (s.y - (H - m)) * 60 * dt;
+    for (const ob of obstacles) {
+      const dx = s.x - ob.x, dy = s.y - ob.y, d = Math.hypot(dx, dy) || 1, reach = ob.r + unit(s) * 3;
+      if (d < reach) { const f = (1 - d / reach) * 520 * K * dt; s.vx += dx / d * f; s.vy += dy / d * f; }
+    }
+    s.x += s.vx * dt; s.y += s.vy * dt;
+    if (s.x < e) { s.x = e; s.vx = Math.abs(s.vx) * 0.3; } else if (s.x > W - e) { s.x = W - e; s.vx = -Math.abs(s.vx) * 0.3; }
+    if (s.y < e) { s.y = e; s.vy = Math.abs(s.vy) * 0.3; } else if (s.y > H - e) { s.y = H - e; s.vy = -Math.abs(s.vy) * 0.3; }
+  }
+
+  // 서로 겹치지 않게 n마리 흩어 놓기
+  function scatter(n) {
+    for (let i = 0; i < n; i++) {
+      let x = 0, y = 0;
+      for (let tries = 0; tries < 30; tries++) {
+        x = rand(0.16, 0.84) * W; y = rand(0.18, 0.8) * H;
+        let ok = true;
+        for (const o of striders) if (Math.hypot(o.x - x, o.y - y) < S * 0.26) ok = false;
+        for (const ob of obstacles) if (Math.hypot(ob.x - x, ob.y - y) < ob.r + S * 0.1) ok = false;
+        if (ok) break;
+      }
+      const s = makeStrider(x, y); s.wait = 0.3 + i * rand(0.3, 0.7);
+      striders.push(s);
+    }
+  }
+
+  /* ============================================================
+     소금쟁이 그리기 (위에서 본 모습) — 이 부분만 떼어 가도 됨
+     s: { x, y, h(라디안), aL·aR(가운뎃다리 각), hind(뒷다리 각), press, lean, z, size }
+     ============================================================ */
+  // 다리 6개: 몸에 붙는 곳(ax) → 발끝(fx, fy). 몸 기준 좌표(x 앞, y 오른쪽), 단위는 unit(s)
+  function legLayout(s) {
+    const out = [];
+    for (const sd of [-1, 1]) {
+      const am = sd < 0 ? s.aL : s.aR;
+      out.push({ k: 0, sd, ax: 0.35, fx: 0.35 + Math.cos(am) * 3.4, fy: (0.2 + Math.sin(am) * 3.4) * sd, bend: 0.55 });          // 가운뎃다리 = 노
+      out.push({ k: 1, sd, ax: -0.15, fx: -0.15 + Math.cos(s.hind) * 3.1, fy: (0.2 + Math.sin(s.hind) * 3.1) * sd, bend: -0.3 }); // 뒷다리 = 키
+      out.push({ k: 2, sd, ax: 0.95, fx: 2.0, fy: 0.62 * sd, bend: 0.1 });                                                         // 짧은 앞다리
+    }
+    return out;
+  }
+  // 연못 바닥 그림자: 몸보다 '발밑 눌린 자리'가 더 크고 진하게 비침
+  function drawStriderShadow(s) {
+    const u = unit(s), c = Math.cos(s.h), sn = Math.sin(s.h), k = 1 + s.z * 0.06;
+    const ox = (8 * K + 2) * k, oy = (12 * K + 3) * k;
+    for (const L of legLayout(s)) {
+      const r = u * (L.k === 2 ? 0.7 : 1.5) * (1 + (L.k === 0 ? s.press * 0.35 : 0));
+      ctx.drawImage(blob, s.x + (L.fx * c - L.fy * sn) * u + ox - r, s.y + (L.fx * sn + L.fy * c) * u + oy - r, r * 2, r * 2);
+    }
+    ctx.save(); ctx.translate(s.x + ox, s.y + oy); ctx.rotate(s.h);
+    ctx.globalAlpha = 0.7; ctx.drawImage(blob, -2.1 * u, -0.75 * u, 3.9 * u, 1.5 * u);
+    ctx.restore(); ctx.globalAlpha = 1;
+  }
+  function drawStrider(s) {
+    const u = unit(s), c = Math.cos(s.h), sn = Math.sin(s.h), lift = 1 + s.z * 0.02;
+    const bx = s.x + c * s.lean * u * 0.2, by = s.y + sn * s.lean * u * 0.2;       // 발은 그대로 두고 몸만 앞뒤로 쏠림
+    const legs = legLayout(s);
+    // 1) 발밑 수면 눌림(딤플): 젓는 순간 더 깊게, 물결에 떠오르면 얕게
+    for (const L of legs) {
+      L.wx = s.x + (L.fx * c - L.fy * sn) * u; L.wy = s.y + (L.fx * sn + L.fy * c) * u;
+      const r = u * (L.k === 2 ? 0.6 : 1.1) * (1 + (L.k === 0 ? s.press * 0.45 : 0)) * clamp(1 - s.z * 0.035, 0.6, 1.4);
+      ctx.drawImage(dimple, L.wx - r, L.wy - r, r * 2, r * 2);
+    }
+    // 2) 다리: 몸 → 무릎 → 발끝
+    ctx.strokeStyle = col.ink; ctx.lineWidth = Math.max(0.8, u * 0.13); ctx.lineCap = ctx.lineJoin = 'round';
+    ctx.beginPath();
+    for (const L of legs) {
+      const ax = bx + (L.ax * c - 0.2 * L.sd * sn) * u, ay = by + (L.ax * sn + 0.2 * L.sd * c) * u;
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(lerp(ax, L.wx, 0.42) + c * L.bend * u, lerp(ay, L.wy, 0.42) + sn * L.bend * u);
+      ctx.lineTo(L.wx, L.wy);
+    }
+    ctx.stroke();
+    // 3) 몸통: 가늘고 긴 방추형 + 등줄 + 눈 + 더듬이
+    ctx.save(); ctx.translate(bx, by); ctx.rotate(s.h); ctx.scale(u * lift, u * lift);
+    ctx.fillStyle = col.ink;
+    ctx.beginPath(); ctx.moveTo(1.35, 0);
+    ctx.bezierCurveTo(1.1, 0.34, 0.2, 0.36, -0.4, 0.26); ctx.bezierCurveTo(-1.0, 0.2, -1.5, 0.1, -1.7, 0);
+    ctx.bezierCurveTo(-1.5, -0.1, -1.0, -0.2, -0.4, -0.26); ctx.bezierCurveTo(0.2, -0.36, 1.1, -0.34, 1.35, 0);
+    ctx.fill();
+    ctx.strokeStyle = dark ? 'rgba(0,0,0,.3)' : 'rgba(255,255,255,.3)'; ctx.lineWidth = 0.1;
+    ctx.beginPath(); ctx.moveTo(0.85, 0); ctx.lineTo(-1.25, 0); ctx.stroke();
+    ctx.fillStyle = col.accent;
+    ctx.beginPath(); ctx.arc(1.1, 0.23, 0.12, 0, TAU); ctx.arc(1.1, -0.23, 0.12, 0, TAU); ctx.fill();
+    ctx.strokeStyle = col.ink; ctx.lineWidth = 0.08;
+    ctx.beginPath(); ctx.moveTo(1.3, 0.08); ctx.lineTo(1.95, 0.4); ctx.moveTo(1.3, -0.08); ctx.lineTo(1.95, -0.4); ctx.stroke();
+    ctx.restore();
+  }
+
+  /* ---------- 장면: 손가락(포인터)과 항적 ---------- */
+  const ptr = { x: -999, y: -999, on: false, speed: 0, lastT: 0, idle: 99, trail: 0 };
+  const wakes = [];                                                   // 손가락이 지나간 자리의 작은 물결들
+
+  function addWake(x, y, amp) {
+    const w = { x, y, t: 0, amp: 1.4 + 2.8 * amp, speed: 70 * K + 20, life: 1.3 };
+    wakes.push(w); if (wakes.length > 40) wakes.shift();
+    addRing(x, y, { r: w.speed * w.life * 0.75, life: w.life, a: 0.3 + 0.35 * amp, n: 2 });
+  }
+  waveAt = (x, y) => {
+    let z = 0;
+    for (const w of wakes) {
+      const q = (Math.hypot(x - w.x, y - w.y) - w.speed * w.t) / (20 * K);
+      if (q > 1 || q < -2.5) continue;
+      z += w.amp * (1 - w.t / w.life) * Math.exp(-q * q * (q > 0 ? 5 : 1)) * Math.cos(q * 4.2);
+    }
+    return clamp(z, -6, 6);
+  };
+
+  function movePtr(e) {
+    const now = performance.now(), x = e.clientX, y = e.clientY;
+    if (ptr.on && now - ptr.lastT < 150) {
+      const d = Math.hypot(x - ptr.x, y - ptr.y), sp = d / (Math.max(8, now - ptr.lastT) / 1000);
+      ptr.speed = lerp(ptr.speed, sp, 0.5);
+      ptr.trail += d;
+      if (ptr.trail > 16 * K + 4) { ptr.trail = 0; addWake(x, y, clamp(ptr.speed / (S * 1.5 + 200), 0.15, 1)); }   // 빠를수록 큰 항적
+    }
+    ptr.x = x; ptr.y = y; ptr.lastT = now; ptr.on = true; ptr.idle = 0;
+  }
+  cv.addEventListener('pointermove', movePtr);
+  cv.addEventListener('pointerdown', (e) => { movePtr(e); addWake(e.clientX, e.clientY, 0.7); });
+  const lift = (e) => { if (e.type !== 'pointerup' || e.pointerType !== 'mouse') ptr.on = false; };
+  cv.addEventListener('pointerup', lift); cv.addEventListener('pointercancel', lift); cv.addEventListener('pointerleave', lift);
+
+  // (fx, fy)에서 건드림 → 반대쪽으로 지그재그 2~3번 급하게 젓기
+  function skitter(s, fx, fy) {
+    const n = Math.random() < 0.5 ? 2 : 3, zig = (Math.random() < 0.5 ? -1 : 1) * rand(0.5, 0.75);
+    const power = rand(0.55, 0.7);
+    const dir = bestDir(s, Math.atan2(s.y - fy, s.x - fx), 0.6, glideDist(power) * (n - 0.4));
+    order(s, dir, n, power, { zig, hurry: true });
+    s.cool = 0.8; s.dipV -= 45;
+  }
+
+  // 잠잠할 때: 제자리에서 멀어졌으면 거리에 맞춰 저어 돌아오고, 아니면 가끔 가볍게 자리만 고침
+  planNext = (s) => {
+    const dx = s.hx - s.x, dy = s.hy - s.y, d = Math.hypot(dx, dy);
+    const blocked = ptr.on && Math.hypot(ptr.x - s.hx, ptr.y - s.hy) < S * 0.16;      // 손가락이 내 자리에 있으면 기다림
+    if (d > S * 0.07 && !blocked) {
+      const n = d > glideDist(0.9) * 1.2 ? 2 : 1;
+      return { dir: Math.atan2(dy, dx) + rand(-0.22, 0.22), n, power: clamp(d / (glideDist(1) * (n > 1 ? 1.75 : 1)), 0.3, 0.9) };
+    }
+    if (Math.random() < 0.4) return { dir: rand(0, TAU), n: 1, power: rand(0.22, 0.36) };
+    return null;
+  };
+
+  onResize = (kx, ky) => {
+    if (!striders.length) scatter(clamp(Math.round(W * H / 70000) + 2, 3, 5));
+    else for (const s of striders) { s.x *= kx; s.y *= ky; s.hx *= kx; s.hy *= ky; }
+  };
+  resize();
+
+  let last = 0, bubbleIn = 2.6;
+  function frame(now) {
+    requestAnimationFrame(frame);
+    const dt = Math.min(0.05, (now - last) / 1000 || 0), t = now / 1000; last = now;
+    if (!W) { resize(); return; }
+
+    ptr.idle += dt; ptr.speed *= Math.exp(-6 * dt);
+    for (let i = wakes.length - 1; i >= 0; i--) { wakes[i].t += dt; if (wakes[i].t >= wakes[i].life) wakes.splice(i, 1); }
+
+    if (ptr.on) for (const s of striders) {
+      const d = Math.hypot(s.x - ptr.x, s.y - ptr.y), u = unit(s);
+      if (s.cool > 0) continue;
+      if (d < u * 3.6) { skitter(s, ptr.x, ptr.y); addRing(ptr.x, ptr.y, { r: 16 * K, life: 0.6, a: 0.7 }); }       // 닿았다!
+      else if (d < S * 0.2 + u * 2 && ptr.speed > 60 * K + 30 && (s.state === 'rest' || (s.state === 'glide' && !s.queue))) {
+        // 물을 휘젓는 손가락이 가까이 지나감 → 한 번 저어 비켜남
+        const power = rand(0.5, 0.7);
+        order(s, bestDir(s, Math.atan2(s.y - ptr.y, s.x - ptr.x), 0.8, glideDist(power)), 1, power, { delay: rand(0.04, 0.2), hurry: true });
+        s.cool = 0.7;
+      }
+    }
+    // 아무도 안 건드리면: 가끔 물속에서 기포가 올라와 한 마리를 놀래킴 (가만 둬도 살아 있게)
+    if (ptr.idle > 4) {
+      bubbleIn -= dt;
+      if (bubbleIn <= 0) {
+        bubbleIn = rand(4.5, 8);
+        const calm = striders.filter((s) => s.state === 'rest');
+        if (calm.length) {
+          const s = calm[Math.random() * calm.length | 0], a = rand(0, TAU), bx = s.x + Math.cos(a) * unit(s) * 2, by = s.y + Math.sin(a) * unit(s) * 2;
+          addRing(bx, by, { r: 9 * K, life: 0.35, a: 0.9 }); addWake(bx, by, 0.5);
+          skitter(s, bx, by);
+        }
+      }
+    }
+    for (const s of striders) updateStrider(s, dt, t);
+
+    ctx.clearRect(0, 0, W, H);
+    drawWater(t);
+    for (const s of striders) drawStriderShadow(s);
+    drawRings(dt);
+    if (ptr.on) { const r = 12 * K + 5; ctx.drawImage(dimple, ptr.x - r, ptr.y - r, r * 2, r * 2); }               // 손가락이 누른 자리
+    for (const s of striders) drawStrider(s);
+  }
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>

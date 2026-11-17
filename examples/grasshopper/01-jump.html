@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  메뚜기 01 · 웅크렸다 점프 (옆모습)
+  몸통(위치·높이·기울기)만 움직이고, 다리는 "엉덩이 → 발" 2마디 IK 로 그때그때 풀어서 그림. 발이 땅에 박혀 있으니
+  몸을 낮추면 무릎이 저절로 더 접히고(웅크림 0.35초), 몸을 쏘아 올리면 다리가 3프레임 만에 쭉 펴짐(폭발).
+  공중에선 포물선 + 속도 방향으로 몸이 기울고, 다리는 뒤로 끌리다 → 접고 → 착지 직전 땅을 향해 뻗음.
+  착지는 스프링(눌렸다 살짝 되튐) + 발 고쳐 딛기. 배·더듬이는 따로 스프링이라 한 박자 늦게 출렁임.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>메뚜기 01 · 웅크렸다 점프</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style> canvas { touch-action: none; cursor: pointer; } </style>
+</head>
+<body>
+<canvas class="fill" id="cv"></canvas>
+<p class="hint">느리게 <b>웅크림</b> → 순식간에 다리 폄 → 포물선 → <b>눌렸다</b> 자리잡기 · 클릭하면 바로 점프</p>
+
+<script>
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  const TAU = Math.PI * 2;
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const damp = (a, b, k, dt) => lerp(a, b, 1 - Math.exp(-k * dt));
+  const smooth = (t) => { t = clamp(t, 0, 1); return t * t * (3 - 2 * t); };
+
+  let W = 0, H = 0, U = 0, S = 0, B = 60, groundY = 0, GRAV = 2500;     // B = 몸길이(px), S = 점프 크기의 기준 길이
+
+  const theme = { shade: 'rgba(28,48,36,0.26)', muted: '#5b6b62', leaf: '#5d9b5a' };
+  function readTheme() {
+    const cs = getComputedStyle(document.documentElement);
+    const v = (n, d) => cs.getPropertyValue(n).trim() || d;
+    theme.shade = v('--shade', theme.shade); theme.muted = v('--muted', theme.muted); theme.leaf = v('--leaf', theme.leaf);
+  }
+  matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', readTheme);
+  readTheme();
+
+  // ================= 메뚜기 그리기 (옆모습 · 복사해서 쓰는 부분) =================
+  // 모든 좌표는 "몸길이 = 1" 단위, 오른쪽을 보는 자세 기준. 원점은 가슴 한가운데.
+  // p = { x, y(가슴 중심의 화면 좌표), B(몸길이 px), face(1 오른쪽 / -1 왼쪽), rot(라디안, 음수 = 고개 듦),
+  //       feet: { hind, mid, front } 각 { lx, ly(몸 기준 발 위치), planted(땅을 딛고 있나) },
+  //       abd(배 처짐), ant: [a, b](더듬이 각도: - 뒤로 눕힘), wing(앞날개 들림 0~1), breath(배 숨쉬기) }
+  const NEAR = { femur: '#8dc04c', edge: '#4c7c28', tibia: '#5a892d', knee: '#3d6820', mark: 'rgba(40,80,20,0.45)' };
+  const FAR  = { femur: '#537f30', edge: '#3a6222', tibia: '#426b27', knee: '#2f5019', mark: 'rgba(20,50,10,0.4)' };
+
+  /** 2마디 IK: 엉덩이(hx,hy) → 발(fx,fy). 마디 길이 l1, l2, bend(±1)로 무릎이 꺾이는 쪽을 고름 */
+  function ik(hx, hy, fx, fy, l1, l2, bend) {
+    const dx = fx - hx, dy = fy - hy, d = Math.hypot(dx, dy) || 1e-6;
+    const dc = clamp(d, Math.abs(l1 - l2) + 0.005, l1 + l2 - 0.002);      // 닿지 않으면 뻗을 수 있는 데까지만
+    const a = Math.atan2(dy, dx);
+    const A = Math.acos(clamp((l1 * l1 + dc * dc - l2 * l2) / (2 * l1 * dc), -1, 1));
+    return { kx: hx + Math.cos(a + bend * A) * l1, ky: hy + Math.sin(a + bend * A) * l1, fx: hx + dx / d * dc, fy: hy + dy / d * dc };
+  }
+
+  /** 뒷다리: 굵은 넓적다리(물방울 모양) + 가는 종아리 + 발목마디. 무릎 관절이 또렷이 보이게 */
+  function hindLeg(c, foot, shift, col, rot) {
+    const HX = -0.05, HY = 0.035;
+    const k = ik(HX, HY, foot.lx + shift, foot.ly, 0.4, 0.42, 1);
+    const len = Math.hypot(k.kx - HX, k.ky - HY), ux = (k.kx - HX) / len, uy = (k.ky - HY) / len, nx = -uy, ny = ux;
+    const mx = HX + ux * len * 0.38, my = HY + uy * len * 0.38;
+    c.fillStyle = col.femur; c.strokeStyle = col.edge; c.lineWidth = 0.012;
+    c.beginPath();
+    c.moveTo(HX - ux * 0.04 + nx * 0.04, HY - uy * 0.04 + ny * 0.04);
+    c.quadraticCurveTo(mx + nx * 0.1, my + ny * 0.1, k.kx + nx * 0.02, k.ky + ny * 0.02);
+    c.lineTo(k.kx - nx * 0.02, k.ky - ny * 0.02);
+    c.quadraticCurveTo(mx - nx * 0.085, my - ny * 0.085, HX - ux * 0.04 - nx * 0.04, HY - uy * 0.04 - ny * 0.04);
+    c.closePath(); c.fill(); c.stroke();
+    // 넓적다리 빗살 무늬
+    c.strokeStyle = col.mark; c.lineWidth = 0.008;
+    c.beginPath();
+    for (let i = 1; i <= 5; i++) {
+      const t = 0.12 + i * 0.13, w = 0.045 * (1 - t * 0.75), x = HX + ux * len * t, y = HY + uy * len * t;
+      c.moveTo(x - nx * w - ux * 0.02, y - ny * w - uy * 0.02); c.lineTo(x + ux * 0.02, y + uy * 0.02); c.lineTo(x + nx * w - ux * 0.02, y + ny * w - uy * 0.02);
+    }
+    c.stroke();
+    // 종아리
+    c.strokeStyle = col.tibia; c.lineWidth = 0.026;
+    c.beginPath(); c.moveTo(k.kx, k.ky); c.lineTo(k.fx, k.fy); c.stroke();
+    // 발목마디: 땅에선 땅을 따라 앞으로, 공중에선 종아리 방향으로 늘어짐
+    let tx, ty;
+    if (foot.planted) { tx = Math.cos(rot); ty = -Math.sin(rot); }
+    else { const tl = Math.hypot(k.fx - k.kx, k.fy - k.ky) || 1; tx = (k.fx - k.kx) / tl; ty = (k.fy - k.ky) / tl; }
+    c.lineWidth = 0.02;
+    c.beginPath(); c.moveTo(k.fx, k.fy); c.lineTo(k.fx + tx * 0.085, k.fy + ty * 0.085); c.stroke();
+    // 무릎
+    c.fillStyle = col.knee;
+    c.beginPath(); c.arc(k.kx, k.ky, 0.03, 0, TAU); c.fill();
+  }
+
+  /** 앞·가운데 다리 (가는 2마디) */
+  function smallLeg(c, hx, hy, foot, shift, bend, col, rot) {
+    const k = ik(hx, hy, foot.lx + shift, foot.ly, 0.13, 0.16, bend);
+    c.strokeStyle = col.tibia;
+    c.lineWidth = 0.03; c.beginPath(); c.moveTo(hx, hy); c.lineTo(k.kx, k.ky); c.stroke();
+    c.lineWidth = 0.02; c.beginPath(); c.moveTo(k.kx, k.ky); c.lineTo(k.fx, k.fy);
+    if (foot.planted) c.lineTo(k.fx + Math.cos(rot) * 0.05, k.fy - Math.sin(rot) * 0.05);
+    c.stroke();
+  }
+
+  function drawHopper(c, p) {
+    const f = p.feet;
+    c.save();
+    c.translate(p.x, p.y); c.scale(p.B * p.face, p.B); c.rotate(p.rot);
+    c.lineCap = 'round'; c.lineJoin = 'round';
+
+    // 먼 쪽 다리: 어둡게, 살짝 앞으로 어긋나게 → 두 쌍으로 읽힘
+    smallLeg(c, 0.2, 0.05, f.front, 0.05, -1, FAR, p.rot);
+    smallLeg(c, 0.07, 0.06, f.mid, 0.06, 1, FAR, p.rot);
+    hindLeg(c, f.hind, 0.075, FAR, p.rot);
+
+    // 배: 뿌리(가슴 쪽)를 축으로 따로 처졌다 돌아옴
+    c.save();
+    c.rotate(-p.abd); c.scale(1, 1 + p.breath);
+    const bg = c.createLinearGradient(0, -0.09, 0, 0.1);
+    bg.addColorStop(0, '#86b84a'); bg.addColorStop(0.55, '#a9cf63'); bg.addColorStop(1, '#d6e69a');
+    c.fillStyle = bg; c.strokeStyle = 'rgba(50,90,25,0.6)'; c.lineWidth = 0.011;
+    c.beginPath();
+    c.moveTo(0.02, -0.075); c.bezierCurveTo(-0.2, -0.085, -0.45, -0.06, -0.6, 0.0);
+    c.bezierCurveTo(-0.45, 0.07, -0.2, 0.1, 0.02, 0.085); c.closePath(); c.fill(); c.stroke();
+    c.strokeStyle = 'rgba(45,80,20,0.35)'; c.lineWidth = 0.008;
+    c.beginPath();
+    for (let i = 1; i <= 5; i++) {
+      const x = -0.07 - i * 0.085, hh = 0.086 * (1 - Math.pow(-x / 0.6, 1.7));
+      c.moveTo(x, -hh * 0.85); c.quadraticCurveTo(x - 0.03, 0.005, x, hh);
+    }
+    c.stroke();
+    // 앞날개: 배 위에 얹혀 있다가 뛸 때 살짝 들림
+    c.translate(0.02, -0.09); c.rotate(p.wing * 0.28); c.translate(-0.02, 0.09);
+    c.fillStyle = 'rgba(128,150,66,0.92)'; c.strokeStyle = 'rgba(60,85,25,0.7)'; c.lineWidth = 0.01;
+    c.beginPath();
+    c.moveTo(0.03, -0.105); c.bezierCurveTo(-0.2, -0.135, -0.5, -0.1, -0.7, -0.03);
+    c.bezierCurveTo(-0.5, 0.0, -0.2, -0.015, 0.0, -0.04); c.closePath(); c.fill(); c.stroke();
+    c.strokeStyle = 'rgba(60,85,25,0.35)'; c.lineWidth = 0.007;
+    c.beginPath(); c.moveTo(0.0, -0.075); c.bezierCurveTo(-0.2, -0.085, -0.45, -0.07, -0.66, -0.032); c.stroke();
+    c.restore();
+
+    // 가슴 + 앞가슴등판(안장 모양)
+    c.fillStyle = '#7fb548'; c.strokeStyle = 'rgba(50,90,25,0.7)'; c.lineWidth = 0.011;
+    c.beginPath();
+    c.moveTo(-0.04, -0.1); c.quadraticCurveTo(0.08, -0.135, 0.2, -0.105); c.quadraticCurveTo(0.235, -0.02, 0.2, 0.07);
+    c.quadraticCurveTo(0.08, 0.105, -0.03, 0.09); c.quadraticCurveTo(-0.07, 0.0, -0.04, -0.1); c.closePath(); c.fill(); c.stroke();
+    c.fillStyle = '#6aa23a';
+    c.beginPath();
+    c.moveTo(-0.05, -0.105); c.quadraticCurveTo(0.08, -0.142, 0.205, -0.108); c.lineTo(0.2, 0.0);
+    c.quadraticCurveTo(0.1, 0.035, -0.02, 0.005); c.closePath(); c.fill(); c.stroke();
+
+    // 머리 · 눈 · 입수염
+    c.fillStyle = '#8cc152';
+    c.beginPath();
+    c.moveTo(0.19, -0.1); c.bezierCurveTo(0.27, -0.14, 0.35, -0.09, 0.345, 0.0);
+    c.bezierCurveTo(0.34, 0.07, 0.3, 0.12, 0.25, 0.115); c.quadraticCurveTo(0.2, 0.08, 0.19, -0.1); c.closePath(); c.fill(); c.stroke();
+    c.fillStyle = '#2b1d12';
+    c.beginPath(); c.ellipse(0.285, -0.055, 0.03, 0.043, -0.2, 0, TAU); c.fill();
+    c.fillStyle = 'rgba(255,255,255,0.7)';
+    c.beginPath(); c.arc(0.278, -0.07, 0.008, 0, TAU); c.fill();
+    c.strokeStyle = '#4c7c28'; c.lineWidth = 0.012;
+    c.beginPath(); c.moveTo(0.27, 0.11); c.lineTo(0.262, 0.15); c.moveTo(0.295, 0.105); c.lineTo(0.3, 0.14); c.stroke();
+
+    // 더듬이: 두 가닥이 따로 흔들림
+    c.strokeStyle = '#3d6820'; c.lineWidth = 0.009;
+    c.beginPath();
+    for (let i = 0; i < 2; i++) {
+      const a = -0.95 - i * 0.2 + p.ant[i], bx = 0.3, by = -0.115;
+      c.moveTo(bx, by);
+      c.quadraticCurveTo(bx + Math.cos(a) * 0.22, by + Math.sin(a) * 0.22, bx + Math.cos(a + 0.28) * 0.44, by + Math.sin(a + 0.28) * 0.44);
+    }
+    c.stroke();
+
+    // 가까운 쪽 다리
+    smallLeg(c, 0.2, 0.05, f.front, 0, -1, NEAR, p.rot);
+    smallLeg(c, 0.07, 0.06, f.mid, 0, 1, NEAR, p.rot);
+    hindLeg(c, f.hind, 0, NEAR, p.rot);
+    c.restore();
+  }
+
+  // ---------------- 상태 ----------------
+  const H0 = 0.2, HC = 0.12, HT = 0.3;          // 몸 중심 높이(몸길이 단위): 서 있을 때 / 웅크렸을 때 / 발이 땅에 닿는 순간
+  const TL = 0.055;                              // 다리를 펴는 시간(초) ≈ 3프레임
+  const STAND = { hind: -0.32, mid: 0.03, front: 0.3 };
+  const FEET = ['hind', 'mid', 'front'];
+  const mkFoot = () => ({ wx: 0, wy: 0, planted: true, lx: 0, ly: H0, tx: 0, ty: 0, rate: 12, step: null });
+  const g = { x: 0, h: 0, vx: 0, vh: 0, rot: 0, rotV: 0, dir: 1, face: 1, mode: 'rest', t: 0, dur: 1.2,
+              plan: null, c0: null, turned: false, stepped: 0, queued: false,
+              feet: { hind: mkFoot(), mid: mkFoot(), front: mkFoot() },
+              abd: 0, abdV: 0, ant: [0, 0], antV: [0, 0], antGoal: 0, twT: 0.5, wing: 0, breath: 0 };
+  const tufts = [], dust = [];
+
+  /** 화면 좌표 ↔ 몸 기준 좌표 (drawHopper 의 translate·scale·rotate 를 그대로 거꾸로) */
+  function toLocal(wx, wy) {
+    const dx = (wx - g.x) * g.dir / B, dy = (wy - (groundY - g.h)) / B, c = Math.cos(g.rot), s = Math.sin(g.rot);
+    return { x: dx * c + dy * s, y: -dx * s + dy * c };
+  }
+  function fromLocal(lx, ly) {
+    const c = Math.cos(g.rot), s = Math.sin(g.rot);
+    return { x: g.x + (lx * c - ly * s) * B * g.dir, y: groundY - g.h + (lx * s + ly * c) * B };
+  }
+  function placeFeet() {
+    for (const k of FEET) { const f = g.feet[k]; f.wx = g.x + g.dir * STAND[k] * B; f.wy = groundY; f.planted = true; f.step = null; }
+  }
+  /** 공중에서 발이 향할 곳. level = true 면 몸이 기울어도 "땅 기준" 방향으로 뻗음 */
+  function air(k, x, y, rate, level) {
+    const f = g.feet[k];
+    if (level) { const c = Math.cos(g.rot), s = Math.sin(g.rot); f.tx = x * c + y * s; f.ty = -x * s + y * c; }
+    else { f.tx = x; f.ty = y; }
+    f.rate = rate; f.planted = false; f.step = null;
+  }
+  function puff(x, n, dirX) {
+    for (let i = 0; i < n; i++) dust.push({ x: x + rand(-0.08, 0.08) * B, y: groundY - rand(0, 0.03) * B, vx: (dirX * rand(0.2, 1.2) + rand(-0.4, 0.4)) * B,
+                                            vy: -rand(0.3, 1.1) * B, r: rand(0.03, 0.07) * B, life: 1 });
+  }
+  function kickTufts(x, power) {
+    for (const t of tufts) { const d = Math.abs(t.fx * W - x); if (d < 1.3 * B) t.swayV += power * (1 - d / (1.3 * B)); }
+  }
+
+  function resize() {
+    const fx = W ? g.x / W : 0.3;
+    W = innerWidth; H = innerHeight; U = Math.min(W, H);
+    const dpr = devicePixelRatio || 1;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    S = Math.min(H, W * 0.75); B = clamp(U * 0.2, 44, 110); groundY = Math.round(H * 0.78); GRAV = 9 * S;
+    // 다시 서 있는 자세로
+    g.x = clamp(fx * W, B, W - B); g.h = H0 * B; g.vx = g.vh = 0; g.rot = g.rotV = 0; g.face = g.dir;
+    g.mode = 'rest'; g.t = 0; g.dur = rand(0.6, 1.2); placeFeet();
+    if (!tufts.length) {
+      const n = 13;
+      for (let i = 0; i < n; i++) {
+        const front = i % 3 === 0;
+        tufts.push({ fx: (i + rand(0.1, 0.9)) / n, front, sway: 0, swayV: 0, ph: rand(0, 9),
+                     blades: Array.from({ length: front ? 4 : 6 }, () => ({ dx: rand(-0.12, 0.12), len: front ? rand(0.16, 0.3) : rand(0.3, 0.62),
+                                                                           lean: rand(-0.35, 0.35), w: rand(0.022, 0.04), a: rand(0.55, 0.95) })) });
+      }
+    }
+  }
+  addEventListener('resize', resize);
+  resize();
+
+  /** 다음 점프 정하기: 거리·높이는 매번 다르게. 벽이 가까우면 먼저 돌아섬 */
+  function planJump() {
+    const small = Math.random() < 0.22;
+    let D = clamp(small ? rand(0.1, 0.16) * W : rand(0.24, 0.44) * W, 1.3 * B, 7 * B);
+    let apex = small ? rand(0.07, 0.12) * S : rand(0.2, 0.42) * S;
+    apex = Math.min(apex, groundY - B * 1.1);
+    const m = B * 0.85, room = g.dir > 0 ? W - m - g.x : g.x - m;
+    if (room < Math.max(B * 1.3, D * 0.55)) { g.mode = 'turn'; g.t = 0; g.turned = false; g.turnFrom = g.dir; return; }
+    D = Math.min(D, room);
+    const vh = Math.sqrt(2 * GRAV * apex), T = 2 * vh / GRAV;
+    g.plan = { vx: g.dir * D / T, vh, T, th: Math.atan2(vh, D / T) };
+    g.c0 = { x: g.x, h: g.h, rot: g.rot };
+    g.mode = 'crouch'; g.t = 0; g.dur = small ? 0.22 : rand(0.32, 0.4);
+  }
+  function launch() {
+    g.mode = 'launch'; g.t = 0;
+    air('front', 0.26, 0.14, 18, false); air('mid', 0.05, 0.16, 18, false);      // 앞다리부터 뗌, 뒷발은 끝까지 땅을 밂
+  }
+  function touchdown() {
+    for (const k of FEET) { const f = g.feet[k], w = fromLocal(f.lx, f.ly); f.wx = w.x; f.wy = groundY; f.planted = true; f.step = null; }
+    g.mode = 'land'; g.t = 0; g.stepped = 0;
+    g.vh = Math.max(g.vh, -4.2 * B); g.vx *= 0.55;         // 충격은 대부분 다리가 받고, 남은 만큼만 몸이 눌림
+    g.rotV = 2.4; g.abdV += 7; g.antV[0] += 9; g.antV[1] += 7;
+    puff(g.x + g.dir * 0.05 * B, 6, g.dir); kickTufts(g.x, 5 * g.dir);
+  }
+
+  cv.addEventListener('pointerdown', () => {
+    if (g.mode === 'rest') g.t = g.dur;
+    else if (g.mode === 'crouch') g.t = Math.max(g.t, g.dur - 0.04);
+    else g.queued = true;
+  });
+
+  // ---------------- 한 프레임 ----------------
+  function update(dt, now) {
+    g.t += dt;
+    let antGoal = 0.06 * Math.sin(now * 1.7), wingGoal = 0;
+
+    if (g.mode === 'rest') {
+      // 쉬는 중: 스프링이 마저 가라앉고, 더듬이가 가끔 톡톡 튐
+      g.vh += (-300 * (g.h - H0 * B) - 20 * g.vh) * dt; g.h += g.vh * dt;
+      g.rotV += (-240 * g.rot - 19 * g.rotV) * dt; g.rot += g.rotV * dt;
+      g.twT -= dt;
+      if (g.twT <= 0) { g.twT = Math.random() < 0.3 ? rand(0.08, 0.2) : rand(0.4, 1.5); g.antV[Math.random() < 0.5 ? 0 : 1] += rand(-11, 11); }
+      if (g.t >= g.dur) planJump();
+    } else if (g.mode === 'crouch') {
+      // 예비 동작: 빨리 내려앉고 끝에서 잠깐 버팀. 발은 그대로라 뒷다리가 더 깊이 접힘
+      const e = 1 - Math.pow(1 - Math.min(1, g.t / g.dur), 3);
+      g.h = lerp(g.c0.h, HC * B, e); g.x = g.c0.x - g.dir * 0.045 * B * e; g.rot = lerp(g.c0.rot, -0.12, e);
+      antGoal = -0.5;
+      if (g.t >= g.dur) launch();
+    } else if (g.mode === 'launch') {
+      // 폭발: 뒷발은 땅에 둔 채 몸만 쏘아 올림 → IK 가 다리를 쭉 펴 줌
+      const u = Math.min(1, g.t / TL);
+      g.x += g.plan.vx * u * dt; g.h += g.plan.vh * u * dt;
+      g.rot = damp(g.rot, -g.plan.th * 0.75, 45, dt);
+      antGoal = -0.8; wingGoal = 1;
+      if (g.t >= TL) {
+        g.mode = 'air'; g.t = 0; g.vx = g.plan.vx; g.vh = g.plan.vh;
+        const hx = g.feet.hind.wx;
+        air('hind', -0.8, 0.14, 16, false);
+        g.abdV += 6; puff(hx, 5, -g.dir); kickTufts(hx, -4 * g.dir);
+      }
+    } else if (g.mode === 'air') {
+      g.vh -= GRAV * dt; g.x += g.vx * dt; g.h += g.vh * dt;
+      const u = g.t / g.plan.T;
+      // 몸은 속도 방향을 따라 기울고, 착지 직전엔 고개를 다시 듦
+      g.rot = damp(g.rot, -Math.atan2(g.vh, Math.abs(g.vx)) * (u > 0.72 ? 0.3 : 0.75), 13, dt);
+      if (u < 0.3)       { air('hind', -0.8, 0.14, 16, false); air('front', 0.26, 0.14, 14, false); air('mid', 0.05, 0.16, 14, false); }     // 뒤로 끌림
+      else if (u < 0.7)  { air('hind', -0.2, 0.15, 11, false); air('front', 0.25, 0.13, 12, false); air('mid', 0.05, 0.15, 12, false); }     // 접음
+      else               { air('hind', -0.25, 0.32, 15, true); air('front', 0.36, 0.3, 15, true); air('mid', 0.07, 0.305, 15, true); }       // 땅을 향해 뻗음
+      antGoal = -0.75; wingGoal = u < 0.45 ? 1 : 0;
+      if (g.vh < 0 && g.h <= HT * B) { g.h = HT * B; touchdown(); }
+    } else if (g.mode === 'land') {
+      // 착지: 눌렸다가 살짝 되튀며 자리잡음. 앞으로 조금 미끄러지고, 발을 하나씩 고쳐 디딤
+      g.vh += (-300 * (g.h - H0 * B) - 20 * g.vh) * dt; g.h = Math.max(0.1 * B, g.h + g.vh * dt);
+      g.vx *= Math.exp(-26 * dt); g.x += g.vx * dt;
+      g.rotV += (-240 * g.rot - 19 * g.rotV) * dt; g.rot += g.rotV * dt;
+      const order = ['front', 'mid', 'hind'], when = [0.2, 0.29, 0.38];
+      while (g.stepped < 3 && g.t > when[g.stepped]) {
+        const f = g.feet[order[g.stepped]], x1 = g.x + g.dir * STAND[order[g.stepped]] * B;
+        if (Math.abs(x1 - f.wx) > 0.02 * B) f.step = { x0: f.wx, x1, t: 0 };
+        g.stepped++;
+      }
+      if (g.t > 0.6) { g.mode = 'rest'; g.t = 0; g.dur = g.queued ? 0.06 : (Math.random() < 0.2 ? rand(2.4, 3.4) : rand(0.7, 2)); g.queued = false; }
+    } else if (g.mode === 'turn') {
+      // 돌아서기: 종이 뒤집듯 좌우를 접었다 펴고, 그 사이 살짝 뜀
+      const u = Math.min(1, g.t / 0.36);
+      g.face = Math.cos(Math.PI * smooth(u)) * g.turnFrom;
+      g.h = H0 * B + Math.sin(Math.PI * u) * 0.06 * B; g.vh = 0;
+      if (!g.turned && u >= 0.5) { g.turned = true; g.dir = -g.dir; placeFeet(); }
+      if (u >= 1) { g.face = g.dir; g.mode = 'rest'; g.t = 0; g.dur = g.queued ? 0.06 : rand(0.3, 0.7); }
+    }
+
+    // 발: 딛고 있으면 땅에 고정(몸이 움직이는 만큼 다리가 접히고 펴짐), 떠 있으면 목표 자세로 따라감
+    for (const k of FEET) {
+      const f = g.feet[k];
+      if (f.planted) {
+        if (f.step) {
+          f.step.t += dt / 0.09;
+          const u = Math.min(1, f.step.t);
+          f.wx = lerp(f.step.x0, f.step.x1, smooth(u)); f.wy = groundY - Math.sin(Math.PI * u) * 0.05 * B;
+          if (u >= 1) f.step = null;
+        }
+        const l = toLocal(f.wx, f.wy); f.lx = l.x; f.ly = l.y;
+      } else { f.lx = damp(f.lx, f.tx, f.rate, dt); f.ly = damp(f.ly, f.ty, f.rate, dt); }
+    }
+
+    // 따라오는 것들: 배(처졌다 돌아옴) · 더듬이(휘청) · 앞날개 · 숨
+    g.abdV += (-260 * g.abd - 15 * g.abdV) * dt; g.abd += g.abdV * dt; g.abd = clamp(g.abd, -0.35, 0.35);
+    for (let i = 0; i < 2; i++) {
+      g.antV[i] += (170 * (antGoal - g.ant[i]) - (9 + i * 2) * g.antV[i]) * dt; g.ant[i] += g.antV[i] * dt;
+      g.ant[i] = clamp(g.ant[i], -1.2, 0.7);
+    }
+    g.wing = damp(g.wing, wingGoal, wingGoal > g.wing ? 30 : 7, dt);
+    g.breath = g.mode === 'rest' ? 0.035 * Math.sin(now * 5.2) : 0;
+
+    // 풀: 바람 + 뛰고 내릴 때 툭 밀림
+    for (const t of tufts) {
+      const goal = 0.07 * Math.sin(now * 1.3 + t.fx * 9 + t.ph) + 0.035 * Math.sin(now * 2.9 + t.fx * 23);
+      t.swayV += (110 * (goal - t.sway) - 6 * t.swayV) * dt; t.sway += t.swayV * dt;
+    }
+    for (let i = dust.length - 1; i >= 0; i--) {
+      const d = dust[i];
+      d.life -= dt / 0.5; d.x += d.vx * dt; d.y += d.vy * dt; d.vx *= Math.exp(-4 * dt); d.vy *= Math.exp(-4 * dt); d.r += dt * B * 0.12;
+      if (d.life <= 0) dust.splice(i, 1);
+    }
+  }
+
+  // ---------------- 그리기 ----------------
+  function drawTufts(front) {
+    ctx.strokeStyle = theme.leaf; ctx.lineCap = 'round';
+    for (const t of tufts) {
+      if (t.front !== front) continue;
+      const x0 = t.fx * W;
+      for (const b of t.blades) {
+        const len = b.len * B, lean = b.lean + t.sway * (1.2 + b.len), bx = x0 + b.dx * B;
+        ctx.globalAlpha = b.a * (front ? 1 : 0.75); ctx.lineWidth = Math.max(1.2, b.w * B);
+        ctx.beginPath(); ctx.moveTo(bx, groundY + 2);
+        ctx.quadraticCurveTo(bx + Math.sin(lean * 0.4) * len * 0.5, groundY - len * 0.55, bx + Math.sin(lean) * len, groundY - Math.cos(lean) * len);
+        ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    // 땅
+    ctx.fillStyle = theme.leaf; ctx.globalAlpha = 0.22; ctx.fillRect(0, groundY, W, H - groundY);
+    ctx.globalAlpha = 0.5; ctx.fillRect(0, groundY, W, Math.max(1.5, B * 0.03));
+    ctx.globalAlpha = 1;
+    drawTufts(false);
+
+    // 땅 그림자: 높이 뜰수록 작고 옅게
+    const hn = clamp((g.h - H0 * B) / (S * 0.4), 0, 1);
+    ctx.fillStyle = theme.shade; ctx.globalAlpha = 1 - 0.65 * hn;
+    ctx.beginPath(); ctx.ellipse(g.x - g.dir * 0.12 * B, groundY + B * 0.025, B * 0.56 * (1 - 0.45 * hn), B * 0.06 * (1 - 0.4 * hn), 0, 0, TAU); ctx.fill();
+    // 흙먼지
+    ctx.fillStyle = theme.muted;
+    for (const d of dust) { ctx.globalAlpha = 0.3 * d.life * d.life; ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, TAU); ctx.fill(); }
+    ctx.globalAlpha = 1;
+
+    drawHopper(ctx, { x: g.x, y: groundY - g.h, B, face: Math.abs(g.face) < 0.03 ? 0.03 * g.dir : g.face, rot: g.rot,
+                      feet: g.feet, abd: g.abd, ant: g.ant, wing: g.wing, breath: g.breath });
+    drawTufts(true);
+  }
+
+  let last = null;
+  function frame(ms) {
+    const dt = last == null ? 0 : clamp((ms - last) / 1000, 0, 0.034);
+    last = ms;
+    if (dt > 0) update(dt, ms / 1000);
+    draw();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>
