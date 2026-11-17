@@ -156,6 +156,8 @@ window.GALLERY = {
       hint: "0.35초 동안 웅크려 뒷다리 무릎을 높이 접었다가, 3프레임 만에 다리를 쭉 펴며 튀어 올라요. 착지 땐 눌렸다 되튀고 발을 하나씩 고쳐 디뎌요. 누르면 바로 뛰어요." },
     { tab: "grasshopper", file: 'examples/grasshopper/02-hop-chain.html', title: "풀밭 연속 뜀 (탑뷰)", situation: "다가가면 흩어지는 풀밭 배경, 탑뷰 화면", tech: ["JS", "Canvas"], touch: true,
       hint: "가까이 가면 몸을 낮추고 더듬이를 손 쪽으로 돌려요. 더 다가가면 뛸 방향으로 몸을 돌리며 웅크렸다 반대쪽으로 폴짝. 뜨는 높이는 몸이 커지고 그림자가 떨어지는 걸로 보여요. 한 마리가 뛰면 옆 친구가 조금 늦게 따라 뛰어요." },
+    { tab: "grasshopper", file: 'examples/grasshopper/03-touch-jump.html', title: "손대면 튀기 (탑뷰)", situation: "커서·손가락에 반응하는 마스코트, 탑뷰 화면", tech: ["JS", "Canvas"], touch: true,
+      hint: "다가가면 더듬이가 손 쪽으로 돌고, 가까울수록 깊이 웅크리며 미세하게 떨어요. 건드리면 손 반대쪽으로 튀고, 빠르게 다가갈수록 멀리 뛰어요. 휙 다가가면 닿기 전에 먼저 뛰고, 착지하면 손이 있던 쪽을 옆눈으로 봐요." },
     /*__MORE_EX__*/
   ],
 
