@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  사마귀 03 · 손대면 위협 자세 (옆모습)
+  평소엔 바람에 흔들리며 기도 자세. 손가락(포인터)이 다가오면 흔들림을 멈추고 고개를 '툭, 툭' 돌려 노려봄.
+  건드리면 0.3초 만에 몸을 일으켜 세우고(스프링이라 살짝 지나쳤다 돌아옴) 앞다리를 위로 번쩍,
+  겉날개를 들고 속날개를 부채처럼 펼치고 배를 말아 올림. 그 자세로 앞뒤로 흔들흔들(위협 춤).
+  손가락이 사정거리 안에 들어오면 0.08초 만에 그쪽으로 경고 찌르기. 한동안 안 건드리면 천천히 접고 원래대로.
+  모든 값은 목표를 향해 스프링/감쇠로 따라가서, 언제 다시 건드려도 자세가 한 프레임에 튀지 않음.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>사마귀 03 · 손대면 위협 자세</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  canvas.fill { touch-action: none; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas class="fill" id="cv"></canvas>
+<p class="hint">가까이 가면 <b>노려봄</b> · 누르면 <b>몸을 세우고 날개를 펼침</b> · 앞에서 또 누르면 찌르기</p>
+
+<script src="../../assets/mantis.js"></script>
+<script>
+  const { Mantis, makeWind, loop, POSE, mixPose, clamp, lerp, rand, ease, easeOutCubic, easeInOutCubic,
+          approach, spring, angDiff, TAU } = MT;
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  let W = 0, H = 0, S = 1, baseY = 0;
+
+  // ---------- 색 (base.css 토큰) ----------
+  const TH = {};
+  const hex = (c) => { const n = parseInt(c.replace('#', ''), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; };
+  const mix = (a, b, k) => { const A = hex(a), B = hex(b); return 'rgb(' + A.map((v, i) => Math.round(lerp(v, B[i], k))).join(',') + ')'; };
+  function readTheme() {
+    const cs = getComputedStyle(document.documentElement), get = (n, d) => cs.getPropertyValue(n).trim() || d;
+    const leaf = get('--leaf', '#5d9b5a'), sky = get('--sky-bot', '#f5f0e2'), ink = get('--ink', '#24302a');
+    TH.leaf = leaf; TH.vein = mix(leaf, ink, 0.4); TH.back = mix(leaf, sky, 0.7); TH.back2 = mix(leaf, sky, 0.84);
+    TH.bark = mix('#8a6a4a', ink, 0.25); TH.barkDark = mix('#8a6a4a', ink, 0.55); TH.barkLight = mix('#8a6a4a', sky, 0.35);
+    TH.ink = ink; TH.accent = get('--accent', '#d9631e');
+  }
+  readTheme();
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', readTheme);
+  const hash = (n) => { const s = Math.sin(n * 127.1 + 31.7) * 43758.5453; return s - Math.floor(s); };
+
+  // ---------- 가지 ----------
+  const STAND = 33, NECK = 0.62;
+  const HOME = [30, 19, -45, -56];                       // 발 자리: 몸 기준 앞(+)·뒤(-), 단위
+  let homeX = 0;
+  const topY = (x) => baseY + S * (4 * Math.sin(x / (190 * S)) + 2 * Math.sin(x / (63 * S) + 1.3));
+  const slopeAt = (x) => Math.atan2(topY(x + 2) - topY(x - 2), 4);
+
+  // ---------- 사마귀 ----------
+  const m = new Mantis({ gaze: 0.25 });
+  const wind = makeWind({ freq: 0.55, calm: 0.2, bias: 0.4 });
+  let st = 'calm', stT = 0, armFrom = { ...POSE.pray }, armNow = { ...POSE.pray };
+  const go = (s) => { st = s; stT = 0; armFrom = { ...armNow }; };
+  // 몸 값들: 목표(goal)를 정하면 스프링/감쇠로 따라감
+  const lunge = { x: 0, v: 0 }, pitchS = { x: 0, v: 0 }, liftS = { x: 0, v: 0 }, neckS = { x: 0, v: 0 };
+  let freezeK = 0, swayK = 1, farK = 1, holdT = 0, jabCool = 0, level = 0, rock = 0;
+  const jab = { x: 0, y: 0, k: 0, from: null };
+  const eye = { gaze: 0.25, from: 0, to: 0, t: 1, dur: 0.1, wait: 0.3, thr: 0.1 };
+
+  // ---------- 손가락(포인터) ----------
+  const ptr = { x: 0, y: 0, on: false, down: false, offT: 0, rings: [] };
+  function setPtr(e) { ptr.x = e.clientX; ptr.y = e.clientY; ptr.on = true; ptr.offT = 0; }
+  cv.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse' || ptr.down) setPtr(e); });
+  cv.addEventListener('pointerdown', (e) => {
+    setPtr(e); ptr.down = true; cv.setPointerCapture?.(e.pointerId);
+    ptr.rings.push({ x: ptr.x, y: ptr.y, k: 0 });
+    poke();
+  });
+  const up = (e) => { ptr.down = false; if (e.pointerType !== 'mouse') ptr.offT = 0.7; };   // 손가락을 떼면 잠시 뒤 사라짐
+  cv.addEventListener('pointerup', up);
+  cv.addEventListener('pointercancel', up);
+  cv.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') ptr.on = false; });
+
+  const headDist = () => { const h = m.J.head; return Math.hypot(ptr.x - h.x, ptr.y - h.y) / S; };
+  /** 건드림: 가까우면 위협 자세, 멀면 노려보기만 */
+  function poke() {
+    const d = Math.hypot(ptr.x - m.x, ptr.y - (m.y - 20 * S)) / S;
+    if (d > 260) { if (st === 'calm') go('alert'); holdT = Math.max(holdT, 1.2); return; }
+    if (st === 'rear' || st === 'hold' || st === 'jab') {
+      holdT = rand(2.4, 3.2); level = Math.min(2, level + 1);
+      if (st === 'hold' && canJab()) startJab();
+      return;
+    }
+    level = 0; holdT = rand(2.4, 3.2); go('rear');
+  }
+  function canJab() { const a = m.aimFrom(ptr.x, ptr.y); return jabCool <= 0 && a.dist < 118 && Math.cos(a.ang - m.R.P) > -0.2; }
+  function startJab() {
+    jab.x = ptr.x; jab.y = ptr.y; jab.k = 0; jabCool = 1.0; go('jab');
+  }
+
+  function placeFeet() {
+    for (let i = 0; i < 4; i++) {
+      const f = m.feet[i], x = homeX + HOME[i] * S;
+      f.x = x; f.y = topY(x) - 2.4 * S; f.a = slopeAt(x); f.lift = 0; f.step = null;
+    }
+  }
+  function resize() {
+    W = innerWidth; H = innerHeight;
+    const dpr = devicePixelRatio || 1;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    S = clamp(Math.min(W / 640, H / 400), 0.32, 1.5);
+    baseY = H * 0.72; homeX = W * 0.4;
+    m.size = S; m.x = homeX; m.y = topY(homeX) - STAND * S;
+    placeFeet();
+  }
+  resize();
+  addEventListener('resize', resize);
+
+  // ---------- 고개: 끊어서 돌리기 (lock 이 있으면 바짝 따라붙음) ----------
+  function trackHead(dt, goal, lock) {
+    if (lock) { eye.gaze += angDiff(eye.gaze, goal) * (1 - Math.exp(-dt * lock)); eye.t = 1; return; }
+    if (eye.t < 1) {
+      eye.t = Math.min(1, eye.t + dt / eye.dur);
+      eye.gaze = eye.from + (eye.to - eye.from) * easeOutCubic(eye.t);
+      if (eye.t >= 1) eye.wait = rand(0.12, 0.45);
+      return;
+    }
+    eye.wait -= dt;
+    const err = angDiff(eye.gaze, goal);
+    if (eye.wait <= 0 && Math.abs(err) > eye.thr) {
+      eye.from = eye.gaze; eye.to = eye.gaze + err * rand(0.9, 1.08);
+      eye.dur = 0.06 + Math.abs(err) * 0.07; eye.t = 0; eye.thr = rand(0.05, 0.12);
+    }
+  }
+
+  let idleLook = 0.25, idleT = 2;
+  loop((dt, t) => {
+    wind.step(dt);
+    stT += dt; jabCool -= dt;
+    if (ptr.offT > 0 && (ptr.offT -= dt) <= 0) ptr.on = false;
+    const near = ptr.on ? headDist() : 1e9;
+
+    // ----- 상태 기계: 목표값만 정함 -----
+    let poseTo = POSE.pray, poseK = 1, pitchGoal = 0, liftGoal = 0, neckGoal = 0, lungeGoal = 0;
+    let fanGoal = 0, fanRate = 3, markGoal = 0, abdGoal = 0.16, still = false, lock = 0, mouthGoal = 0, antAim = 0;
+    switch (st) {
+      case 'calm':
+        poseK = ease(stT / 0.6);
+        if (near < 190) go('alert');
+        break;
+      case 'alert':                                               // 얼어붙고 노려봄. 낫을 살짝 당김
+        still = true; antAim = 0.9; poseTo = mixPose(POSE.pray, POSE.cock, 0.6); poseK = ease(stT / 0.35);
+        neckGoal = 0.08; liftGoal = 2;
+        if (near < 70) { level = 0; holdT = rand(2.4, 3.2); go('rear'); }
+        else if (near > 240 && stT > 1.2 && holdT <= 0) go('calm');
+        holdT -= dt;
+        break;
+      case 'rear':                                                // 0.3초: 일어서며 앞다리 번쩍, 날개 펼침
+        still = true; lock = 24;
+        poseTo = POSE.threat; poseK = MT.easeOutBack(stT / 0.3, 1.8);
+        pitchGoal = -0.4; liftGoal = 11; neckGoal = 0.32; lungeGoal = -6;
+        fanGoal = 1; fanRate = 16; markGoal = 1; abdGoal = -0.12; mouthGoal = 0.55;
+        if (stT > 0.34) go('hold');
+        break;
+      case 'hold': {                                              // 위협 춤: 앞뒤로 흔들흔들, 날개 파르르
+        still = true; lock = 18;
+        poseTo = POSE.threat; poseK = 1;
+        const amp = 1 + level * 0.35;
+        rock += dt * TAU * (1.25 + level * 0.2);
+        pitchGoal = -0.4 + 0.035 * Math.sin(rock + 0.6) * amp; liftGoal = 11 + 1.5 * Math.sin(rock * 2) * amp;
+        neckGoal = 0.32 + 0.04 * Math.sin(rock + 1.2); lungeGoal = -6 + 5.5 * Math.sin(rock) * amp;
+        fanGoal = 0.93 + 0.07 * Math.sin(t * 31); fanRate = 12; markGoal = 1; abdGoal = -0.12 + 0.04 * Math.sin(rock + 2);
+        mouthGoal = 0.35 + 0.25 * Math.max(0, Math.sin(rock * 2));
+        holdT -= dt;
+        if (ptr.on && canJab() && near < 120) startJab();
+        else if (holdT <= 0) go('relax');
+        break;
+      }
+      case 'jab':                                                 // 0.08초 찌르고, 0.35초 동안 위협 자세로 되돌림
+        still = true; lock = 40;
+        pitchGoal = -0.3; liftGoal = 9; neckGoal = 0.12; lungeGoal = 9;
+        fanGoal = 1; fanRate = 20; markGoal = 1; abdGoal = -0.12; mouthGoal = 0.7;
+        if (stT > 0.43) { armFrom = { ...armNow }; go('hold'); }
+        break;
+      case 'relax':                                               // 천천히 접고 앉음
+        poseTo = POSE.pray; poseK = easeInOutCubic(stT / 1.3);
+        fanRate = 2.6; antAim = 0.4;
+        if (stT > 1.5) go('calm');
+        break;
+    }
+
+    // ----- 몸 -----
+    freezeK = approach(freezeK, still ? 1 : 0, still ? 30 : 3, dt);
+    swayK = approach(swayK, still ? 0 : 1, still ? 18 : 1, dt);
+    const env = lerp(wind.calm, 1, wind.gust), sw = (lag) => Math.sin(wind.phase - lag) * env;
+    spring(pitchS, pitchGoal, st === 'rear' ? 17 : 9, 0.5, dt);
+    spring(liftS, liftGoal, st === 'rear' ? 18 : 10, 0.45, dt);
+    spring(neckS, neckGoal, st === 'jab' ? 40 : 14, 0.55, dt);
+    spring(lunge, lungeGoal, st === 'jab' ? 32 : 13, 0.45, dt);
+    m.fan = approach(m.fan, fanGoal, fanRate, dt);
+    m.mark = approach(m.mark, markGoal, markGoal > m.mark ? 14 : 2.5, dt);
+    m.mouth = approach(m.mouth, mouthGoal, 12, dt);
+    m.antAim = approach(m.antAim, m.fan > 0.4 ? 0 : antAim, 9, dt);
+
+    m.x = homeX + (lunge.x + 8 * sw(0) * swayK) * S;
+    m.y = topY(m.x) - (STAND + liftS.x) * S + Math.abs(sw(0)) * 1.6 * S * swayK;
+    m.pitch = slopeAt(m.x) + pitchS.x + 0.045 * sw(0.6) * swayK;
+    m.neck = NECK + neckS.x - 0.06 * sw(1.0) * swayK;
+    m.abd = approach(m.abd, abdGoal + 0.03 * sw(1.6) * swayK, 6, dt);
+
+    // ----- 고개 -----
+    if (ptr.on && (st !== 'calm' || near < 320)) trackHead(dt, m.lookAngle(ptr.x, ptr.y), lock);
+    else {
+      if ((idleT -= dt) <= 0) { idleT = rand(1.4, 3.5); idleLook = rand(0.05, 0.55); }
+      trackHead(dt, idleLook, 0);
+    }
+    m.gaze = eye.gaze;
+    m.focus = ptr.on ? ptr : null;
+    m.update(dt);
+    m.solve();
+
+    // ----- 앞다리 -----
+    if (st === 'jab') {
+      const k = stT < 0.08 ? Math.pow(stT / 0.08, 0.7) : 1 - easeInOutCubic((stT - 0.08) / 0.35);
+      const a = m.J.armRoot, dx = jab.x - a.x, dy = jab.y - a.y, d = Math.hypot(dx, dy) || 1;
+      const rp = m.reach(jab.x - dx / d * 6 * S, jab.y - dy / d * 6 * S);
+      rp.tibia = stT < 0.05 ? lerp(armFrom.tibia, 2.2, stT / 0.05) : lerp(2.2, POSE.threat.tibia, clamp((stT - 0.05) / 0.2, 0, 1));
+      armNow = mixPose(POSE.threat, rp, k);
+      armNow.tibia = rp.tibia;
+    } else armNow = mixPose(armFrom, poseTo, poseK);
+    farK = approach(farK, st === 'hold' || st === 'rear' || st === 'jab' ? 1.6 : 1, 8, dt);
+    m.setArms(armNow, farK);                                       // 위협 땐 두 팔을 더 벌려 크게 보이게
+    if (st === 'hold') {                                           // 팔이 미세하게 떨림
+      m.arms[0].femur += 0.03 * Math.sin(t * 23); m.arms[1].femur += 0.03 * Math.sin(t * 19 + 1);
+      m.arms[0].coxa += 0.05 * Math.sin(rock + 0.4); m.arms[1].coxa += 0.05 * Math.sin(rock + 0.9);
+    } else if (st === 'calm') {
+      m.arms[0].femur += 0.03 * sw(1.4) * swayK; m.arms[1].femur += 0.03 * sw(1.9) * swayK;
+    }
+
+    for (let i = ptr.rings.length - 1; i >= 0; i--) if ((ptr.rings[i].k += dt / 0.45) >= 1) ptr.rings.splice(i, 1);
+    draw(t, env);
+  });
+
+  // ---------- 그리기 ----------
+  function leaf(x, y, a, len, wid, color) {
+    ctx.save();
+    ctx.translate(x, y); ctx.rotate(a);
+    ctx.beginPath();
+    ctx.moveTo(0, 0); ctx.quadraticCurveTo(len * 0.4, -wid, len, 0); ctx.quadraticCurveTo(len * 0.45, wid * 0.8, 0, 0);
+    ctx.fillStyle = color || TH.leaf; ctx.fill();
+    if (!color) {
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(len * 0.5, -wid * 0.1, len * 0.94, 0);
+      ctx.strokeStyle = TH.vein; ctx.lineWidth = Math.max(0.6, len * 0.014); ctx.stroke();
+    }
+    ctx.restore();
+  }
+  function draw(t, env) {
+    const dpr = devicePixelRatio || 1;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    const ph = wind.phase;
+    // 뒤쪽 잎 무더기
+    const cell = 150 * S;
+    for (let i = -1; i <= Math.ceil(W / cell) + 1; i++) {
+      const x = i * cell + hash(i) * cell * 0.6, y = H * (0.1 + 0.7 * hash(i + 0.5)), n = 3 + (hash(i + 0.2) * 3 | 0);
+      for (let k = 0; k < n; k++) {
+        const a = hash(i * 7 + k) * TAU + 0.12 * Math.sin(ph - hash(i + k) * 3) * env;
+        leaf(x, y, a, (46 + 40 * hash(i * 3 + k)) * S, (13 + 8 * hash(i + k * 5)) * S, k % 2 ? TH.back : TH.back2);
+      }
+    }
+    // 가지
+    const th = 15 * S;
+    ctx.beginPath();
+    for (let x = -20; x <= W + 20; x += 12) ctx.lineTo(x, topY(x));
+    for (let x = W + 20; x >= -20; x -= 12) ctx.lineTo(x, topY(x) + th + 2.5 * S * Math.sin(x / (97 * S)));
+    ctx.closePath(); ctx.fillStyle = TH.bark; ctx.fill();
+    ctx.beginPath();
+    for (let x = -20; x <= W + 20; x += 12) ctx.lineTo(x, topY(x) + 2.2 * S);
+    ctx.strokeStyle = TH.barkLight; ctx.lineWidth = 1.6 * S; ctx.globalAlpha = 0.6; ctx.stroke(); ctx.globalAlpha = 1;
+    const tc = 150 * S;
+    for (let i = -1; i <= Math.ceil(W / tc) + 1; i++) {
+      const kx = (i + 0.2 + 0.6 * hash(i + 3)) * tc, ky = topY(kx);
+      ctx.strokeStyle = TH.barkDark; ctx.lineWidth = 1.3 * S;
+      ctx.beginPath(); ctx.ellipse(kx + 30 * S, ky + th * 0.55, 5 * S, 2.6 * S, 0.1, 0, TAU); ctx.stroke();
+      if (Math.abs(kx - homeX) < 110 * S) continue;               // 사마귀 바로 밑엔 잔가지 없음
+      const fl = 0.16 * Math.sin(ph * 1.5 + i) * env, a0 = -(1.0 + 0.4 * hash(i + 6)) + fl * 0.5, len = (26 + 22 * hash(i + 5)) * S;
+      const ex = kx + Math.cos(a0) * len, ey = ky + 2 * S + Math.sin(a0) * len;
+      ctx.strokeStyle = TH.bark; ctx.lineWidth = 3 * S; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(kx, ky + 2 * S); ctx.lineTo(ex, ey); ctx.stroke();
+      leaf(ex, ey, a0 - 0.5 + fl, (38 + 16 * hash(i + 7)) * S, 11 * S);
+      leaf(ex, ey, a0 + 0.6 + fl * 1.4, (30 + 14 * hash(i + 8)) * S, 9 * S);
+    }
+
+    m.draw(ctx);
+
+    // 손가락 끝 + 누른 자리 물결
+    if (ptr.on) {
+      ctx.fillStyle = TH.ink; ctx.globalAlpha = ptr.down ? 0.16 : 0.09;
+      ctx.beginPath(); ctx.arc(ptr.x, ptr.y, 13 * Math.max(S, 0.7), 0, TAU); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    ctx.strokeStyle = TH.accent; ctx.lineWidth = 1.5;
+    for (const r of ptr.rings) {
+      ctx.globalAlpha = 0.5 * (1 - r.k);
+      ctx.beginPath(); ctx.arc(r.x, r.y, (10 + 26 * easeOutCubic(r.k)) * Math.max(S, 0.7), 0, TAU); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+</script>
+</body>
+</html>
