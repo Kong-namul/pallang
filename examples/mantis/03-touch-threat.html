@@ -67,7 +67,8 @@
   function setPtr(e) { ptr.x = e.clientX; ptr.y = e.clientY; ptr.on = true; ptr.offT = 0; }
   cv.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse' || ptr.down) setPtr(e); });
   cv.addEventListener('pointerdown', (e) => {
-    setPtr(e); ptr.down = true; cv.setPointerCapture?.(e.pointerId);
+    setPtr(e); ptr.down = true;
+    try { cv.setPointerCapture(e.pointerId); } catch (err) { /* 캡처가 안 돼도 반응에는 지장 없음 */ }
     ptr.rings.push({ x: ptr.x, y: ptr.y, k: 0 });
     poke();
   });
