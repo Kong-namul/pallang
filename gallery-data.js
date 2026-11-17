@@ -165,6 +165,8 @@ window.GALLERY = {
       hint: "건드리면 \"찍\" 소리 물결과 함께 0.1초 만에 날개를 펴고, 날개 잔상을 남기며 툭툭 튀듯 날아가요. 잠시 뒤 새 매미가 날아와 줄기에 툭 부딪혀 앉고, 날개를 두 번에 나눠 접은 뒤 위를 보고 다시 울어요." },
     { tab: "cicada", file: 'examples/cicada/03-molt.html', title: "허물 벗고 나오기", situation: "변화·성장·완성 순간 연출, 인트로", tech: ["JS", "Canvas"],
       hint: "등이 갈라지고 흰 몸이 쭉쭉 밀며 나와서 껍질 위로 올라서요. 쭈글쭈글한 날개가 펴지고 몸 색이 짙어진 뒤 첫 비행. 나오는 몸은 껍질 틈으로만 보이게 잘라 그렸어요. 누르면 다음 단계로 넘어가요." },
+    { tab: "dragonfly", file: 'examples/dragonfly/05-click-dart.html', title: "클릭한 곳으로 다트", situation: "인터랙티브 랜딩, 클릭 위치 강조", tech: ["JS", "SVG", "3D transform"], touch: true,
+      hint: "누른 곳을 0.1초쯤 노려본 뒤 툭 날아가요. 정면이 아니면 고개부터 홱 돌리거나 몸은 그대로 옆으로 미끄러지고, 끝에서 살짝 지나쳤다 제자리. 이동 중에 또 누르면 도착하자마자 다음 곳으로 가요." },
     /*__MORE_EX__*/
   ],
 
