@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  무당벌레 01 · 풀잎 끝에서 날아오르기
+  풀잎은 "뿌리에서 끝으로 각도를 쌓아 가는 등뼈" — 바람 + 무당벌레 무게(끝으로 갈수록 지렛대가 길어져 더 휨)로 굽고,
+  떠나는 순간 그 휨을 스프링에 넘겨줘서 감쇠 진동으로 출렁이며 되돌아옴.
+  무당벌레는 짧게 달리고 멈추기를 반복(상태 기계) → 끝에서 두리번 → 딱지날개 탁(오버슈트) → 속날개 펴고 붕 →
+  처음엔 무거워서 살짝 가라앉았다가 휘청이며 가속. 몸 방향은 항상 실제 속도 방향을 따라감.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>무당벌레 01 · 풀잎 끝에서 날아오르기</title>
+<link rel="stylesheet" href="../../assets/base.css">
+</head>
+<body>
+<canvas class="fill" id="cv"></canvas>
+<div class="stage" id="stage"></div>
+<p class="hint"><b>종종걸음</b>과 멈칫 · 끝에서 두리번 → 딱지날개 <b>탁</b> → 휘청 이륙, 풀잎은 <b>출렁</b></p>
+
+<script src="../../assets/ladybug.js"></script>
+<script>
+  const { makeLadybug, loop, clamp, lerp, rand, ease, smooth, damp, RAD } = LB;
+  const stage = document.getElementById('stage');
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  let W = 0, H = 0, U = 30;          // U = 무당벌레 몸길이(px) — 모든 크기의 기준
+  let leaf = '#5d9b5a';
+
+  // ---------------- 풀잎 ----------------
+  const N = 30;                       // 등뼈 마디 수
+  const WEIGHT = 1.5;                 // 무당벌레 무게가 풀잎을 휘는 세기
+  const G1 = 0.2 + 1 / 6;             // 끝에 하중이 있을 때 끝 각도 (정규화용)
+  /** 하중이 sb 위치에 있을 때 s 지점까지 쌓이는 휨 각도. 끝으로 갈수록 가늘어 더 잘 휨 */
+  function loadAngle(s, sb) {
+    const u = Math.min(s, sb);
+    return 0.4 * sb * u - 0.2 * u * u + (2 / 3) * sb * u * u * u - 0.5 * u * u * u * u;
+  }
+  function makeBlade(o) {
+    return Object.assign({ x: 0, y: 0, len: 100, lean: 0.06, curl: 0.36, w: 10, ph: rand(0, 9), sway: 1,
+                           pts: Array.from({ length: N + 1 }, () => ({ x: 0, y: 0, a: 0 })) }, o);
+  }
+  /** 등뼈 계산: 각 마디의 각도 = 기본 기울기 + 원래 굽음 + 바람 + 하중 + 출렁임 */
+  function solve(b, t, load, sb, ring) {
+    const wind = (0.034 * Math.sin(t * 0.8 + b.ph) + 0.02 * Math.sin(t * 1.9 + b.ph * 2.3) +
+                  0.012 * Math.sin(t * 3.7 + b.ph * 0.7)) * b.sway;
+    const ds = b.len / N;
+    let x = b.x, y = b.y;
+    for (let i = 0; i <= N; i++) {
+      const s = i / N;
+      const a = b.lean + b.curl * Math.pow(s, 1.7) + wind * Math.pow(s, 1.4) * 2.2 +
+                load * WEIGHT * loadAngle(s, sb) + ring * loadAngle(s, 1) / G1;
+      const p = b.pts[i];
+      p.x = x; p.y = y; p.a = a;
+      x += Math.sin(a) * ds; y -= Math.cos(a) * ds;
+    }
+  }
+  const halfW = (b, s) => b.w * Math.pow(Math.max(0, 1 - s), 0.55) * (0.72 + 0.28 * (1 - s));
+  function at(b, s) {                 // 등뼈 위 s(0~1) 지점
+    const f = clamp(s, 0, 1) * N, i = Math.min(N - 1, Math.floor(f)), k = f - i;
+    const p = b.pts[i], q = b.pts[i + 1];
+    return { x: lerp(p.x, q.x, k), y: lerp(p.y, q.y, k), a: lerp(p.a, q.a, k) };
+  }
+  function drawBlade(b, alpha, detail) {
+    const P = b.pts;
+    const edge = (sgn, up) => {       // 한쪽 가장자리를 따라 올라가거나(up) 내려옴
+      for (let i = 0; i <= N; i++) {
+        const j = up ? i : N - i, p = P[j], hw = halfW(b, j / N) * sgn;
+        ctx.lineTo(p.x + Math.cos(p.a) * hw, p.y + Math.sin(p.a) * hw);
+      }
+    };
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = leaf;
+    ctx.beginPath(); edge(-1, true); edge(1, false); ctx.closePath(); ctx.fill();
+    if (!detail) return;
+    // 오른쪽 절반은 살짝 어둡게(가운데 맥에서 접힌 느낌), 가운데 맥은 밝게
+    ctx.globalAlpha = 0.13; ctx.fillStyle = '#000';
+    ctx.beginPath();
+    for (let i = 0; i <= N; i++) ctx.lineTo(P[i].x, P[i].y);
+    edge(1, false); ctx.closePath(); ctx.fill();
+    ctx.globalAlpha = 0.3; ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(1, b.w * 0.09); ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(P[0].x, P[0].y);
+    for (let i = 1; i <= N; i++) ctx.lineTo(P[i].x, P[i].y);
+    ctx.stroke();
+  }
+
+  let blade, extras = [];
+  function resize() {
+    W = stage.clientWidth; H = stage.clientHeight;
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    leaf = getComputedStyle(document.documentElement).getPropertyValue('--leaf').trim() || leaf;
+    U = clamp(Math.min(W, H) * 0.1, 20, 56);
+    const len = Math.min(H * 0.86, W * 1.25);
+    blade = makeBlade({ x: Math.max(W * 0.12, W / 2 - len * 0.21), y: H + U * 0.4, len, w: U * 0.6 });
+    // 뒤쪽 풀: 가늘고 흐리게, 제각각 흔들림
+    extras = [];
+    const n = Math.round(clamp(W / 70, 5, 12));
+    for (let i = 0; i < n; i++) {
+      const far = i % 2 === 0;
+      extras.push(makeBlade({
+        x: (i + rand(0.1, 0.9)) / n * W, y: H + 6, len: H * rand(0.3, far ? 0.75 : 0.55),
+        lean: rand(-0.22, 0.22), curl: rand(-0.5, 0.5), w: U * rand(0.16, 0.34), sway: rand(1.2, 2.2),
+        alpha: far ? 0.2 : 0.38,
+      }));
+    }
+    if (lb) lb.size = U;
+  }
+
+  // ---------------- 무당벌레 ----------------
+  let lb = null;
+  resize();
+  addEventListener('resize', resize);
+  lb = makeLadybug(stage, { size: U });
+
+  const S_TIP = 0.955;                // 여기서 멈춤 (머리가 풀잎 끝에 닿는 곳)
+  let st, tm, s, v, vT, off, offT, yaw, load, sb, ring = 0, ringV = 0, fly, script;
+
+  function spawn() {
+    st = 'walk'; tm = rand(0.5, 1.0);
+    s = -0.07; v = 0; vT = 0; off = rand(-0.4, 0.4); offT = off; yaw = 0;
+    sb = 0; load = 1;
+    Object.assign(lb, { open: 0, wings: 0, buzz: 0, tuck: 0, alt: 0, look: 0, alert: 1, shade: 1 });
+    lb.el.style.opacity = 1;
+    burst();
+  }
+  function burst() {                  // 짧게 달리기 시작
+    st = 'walk'; tm = rand(0.35, 1.05);
+    vT = rand(1.9, 2.9) * U / blade.len;
+    offT = clamp(off + rand(-0.7, 0.7), -0.7, 0.7);
+    ringV += 0.05;                    // 발 구르는 만큼 풀잎이 아주 살짝 까딱
+  }
+  /** 끝에서 망설이는 대본: [시간, 머리 방향, 몸 방향, 더듬이 바쁨] — 매번 조금씩 다르게 */
+  function makeScript() {
+    const d = Math.random() < 0.5 ? 1 : -1, list = [];
+    let t = rand(0.2, 0.35);
+    list.push({ t, look: 0, yaw: 0, alert: 3 });
+    const looks = Math.random() < 0.6 ? 2 : 3;
+    for (let i = 0; i < looks; i++) {
+      const sg = i % 2 ? -d : d;
+      t += rand(0.3, 0.5);
+      list.push({ t, look: sg * rand(14, 24), yaw: sg * rand(7, 15), alert: 3.2 });
+      t += rand(0.12, 0.45);
+      list.push({ t, look: sg * rand(4, 10), yaw: sg * rand(5, 10), alert: 1.2 });   // 잠깐 굳음
+    }
+    t += rand(0.3, 0.45); list.push({ t, look: 0, yaw: 0, alert: 2 });
+    t += rand(0.22, 0.4); list.push({ t, look: 0, yaw: 0, alert: 0 });               // 뛰기 직전 정적
+    return list;
+  }
+  spawn();
+
+  loop((dt, t) => {
+    tm -= dt;
+    // ---- 1) 걷기 / 멈칫 ----
+    if (st === 'walk' || st === 'pause') {
+      const careful = lerp(1, 0.5, smooth(0.62, 0.95, s));        // 끝이 가까우면 조심조심
+      v = damp(v, st === 'walk' ? vT * careful : 0, st === 'walk' ? 14 : 24, dt);
+      off = damp(off, offT, 2.2, dt);
+      yaw = damp(yaw, st === 'walk' ? clamp((offT - off) * 26, -20, 20) : 0, 9, dt);
+      if (tm <= 0) {
+        if (st === 'walk') {
+          st = 'pause';
+          tm = Math.random() < 0.2 ? rand(0.8, 1.3) : rand(0.14, 0.55);
+          lb.twitch(1.2);
+        } else burst();
+      }
+      if (s >= S_TIP) { st = 'tip'; tm = 0; v = 0; script = makeScript(); ringV += 0.12; }
+    }
+    // ---- 2) 끝에서 망설임 ----
+    else if (st === 'tip') {
+      const tt = -tm;                                               // tm 은 계속 줄어드니 부호만 뒤집어 씀
+      let cur = script[script.length - 1];
+      for (const k of script) if (tt < k.t) { cur = k; break; }
+      lb.look = damp(lb.look, cur.look, 14, dt);
+      yaw = damp(yaw, cur.yaw, 7, dt);
+      lb.alert = cur.alert;
+      off = damp(off, 0, 3, dt);
+      if (tt > script[script.length - 1].t) { st = 'open'; tm = 0; ringV -= 0.25; }
+    }
+    // ---- 3) 딱지날개 탁 → 속날개 펴기 → 붕 ----
+    else if (st === 'open') {
+      const tt = -tm;
+      lb.open = 1 - Math.exp(-tt * 22) * Math.cos(tt * 30);        // 탁 튕기고 살짝 넘쳤다 자리 잡음
+      lb.wings = clamp((tt - 0.2) / 0.17, 0, 1);
+      lb.buzz = clamp((tt - 0.4) / 0.14, 0, 1);
+      lb.alert = 0.3; lb.look = damp(lb.look, 0, 10, dt);
+      load = 1 - 0.45 * lb.buzz;                                    // 날개 힘으로 몸이 가벼워짐 → 풀잎이 조금 펴짐
+      if (tt > 0.86) {
+        // 이륙: 지금까지의 휨을 "출렁임" 스프링에 그대로 넘겨줌 (모양이 끊기지 않음)
+        ring += load * WEIGHT * G1; ringV += 1.6; load = 0; sb = 1;
+        const p = at(blade, s), side = Math.random() < 0.7 ? 1 : -1;
+        fly = { t: 0, x: lb.x, y: lb.y, h0: p.a + yaw / RAD, side, hEnd: side * rand(0.55, 1.15),
+                p1: rand(0, 6.28), p2: rand(0, 6.28), w1: rand(6, 8.5), w2: rand(10, 13), hd: lb.heading };
+        st = 'fly';
+      }
+    }
+    // ---- 4) 비행 ----
+    else if (st === 'fly') {
+      const f = fly; f.t += dt;
+      const course = lerp(f.h0, f.hEnd, ease(f.t / 0.9));
+      const env = smooth(0.05, 0.5, f.t);
+      const psi = course + env * (0.42 * Math.sin(f.t * f.w1 + f.p1) + 0.2 * Math.sin(f.t * f.w2 + f.p2));
+      const sp = U * (1.3 + 8 * ease(f.t / 1.2));
+      const sag = U * 3.4 * Math.exp(-f.t / 0.24);                  // 처음엔 무거워서 살짝 가라앉음
+      const vx = Math.sin(psi) * sp, vy = -Math.cos(psi) * sp + sag;
+      f.x += vx * dt; f.y += vy * dt;
+      f.hd = damp(f.hd, Math.atan2(vx, -vy + sag * 0.6) * RAD, 9, dt);   // 몸은 속도 방향을 한 박자 늦게 따라감
+      lb.x = f.x + rand(-1, 1) * 0.012 * U; lb.y = f.y + rand(-1, 1) * 0.012 * U;
+      lb.heading = f.hd;
+      lb.alt = 85 * ease(f.t / 1.5);
+      lb.shade = Math.max(0, 1 - f.t * 5);
+      lb.tuck = damp(lb.tuck, 0.55, 8, dt);
+      lb.open = damp(lb.open, 1, 10, dt); lb.wings = 1; lb.buzz = 1; lb.alert = 0.4;
+      const m = U * 2.2;
+      if (f.x < -m || f.x > W + m || f.y < -m || f.y > H + m || f.t > 5) { st = 'gone'; tm = rand(0.5, 1.1); lb.el.style.opacity = 0; }
+    }
+    else if (st === 'gone' && tm <= 0) spawn();
+
+    // ---- 풀잎: 하중 + 출렁임(감쇠 스프링) ----
+    if (st !== 'fly' && st !== 'gone') {
+      s = Math.min(S_TIP + 0.004, s + v * dt);
+      sb = Math.max(0, s);
+    }
+    const loaded = load > 0;
+    const K = loaded ? 46 : 96, C = loaded ? 3.4 : 1.9;             // 떠난 뒤엔 가볍고 탱탱하게 → 오래 출렁
+    ringV += (-K * ring - C * ringV) * dt;
+    ring += ringV * dt;
+
+    ctx.clearRect(0, 0, W, H);
+    for (const b of extras) { solve(b, t, 0, 0, 0); drawBlade(b, b.alpha, false); }
+    solve(blade, t, load, sb, ring);
+    drawBlade(blade, 1, true);
+    ctx.globalAlpha = 1;
+
+    // ---- 무당벌레를 풀잎 위에 올려놓기 ----
+    if (st !== 'fly' && st !== 'gone') {
+      const p = at(blade, s);
+      const side = off * halfW(blade, clamp(s, 0, 1)) * 0.55;
+      const jit = lb.buzz * 0.02 * U;                               // 붕— 떨림
+      lb.x = p.x + Math.cos(p.a) * side + rand(-1, 1) * jit;
+      lb.y = p.y + Math.sin(p.a) * side + rand(-1, 1) * jit;
+      lb.heading = p.a * RAD + yaw;
+      lb.walk(v * blade.len * dt);
+    }
+    lb.update(dt);
+    lb.render();
+  });
+</script>
+</body>
+</html>

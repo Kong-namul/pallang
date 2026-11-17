@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  잠자리 01 · 정지비행 후 순간 다트
+  거의 멈춘 정지비행(작은 위치 보정 + 아주 빠른 날갯짓, 앞·뒷날개 반대 위상) → 0.2~0.3초 만에 ease-out 으로 '툭' 이동.
+  이동 직전 살짝 뒤로 움찔(예비동작), 끝에서 조금 지나쳤다 제자리(오버슛). 옆걸음은 몸을 안 돌리고 기울기(bank)만,
+  방향 전환은 먼저 고개를 홱 돌린 뒤 출발. 대기 시간·거리·종류를 매번 다르게 뽑아 리듬이 안 보이게 함.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>잠자리 01 · 정지비행 후 다트</title>
+<link rel="stylesheet" href="../../assets/base.css">
+</head>
+<body>
+<canvas class="fill" id="trail"></canvas>
+<div class="stage" id="stage"></div>
+<p class="hint"><b>정지비행</b> → 0.2초 만에 휙 · 옆걸음 또는 돌아서</p>
+
+<script src="../../assets/dragonfly.js"></script>
+<script>
+  const { makeDragonfly, loop, clamp, lerp, rand, wobble, angDiffDeg, easeOutQuart, easeOutBack, easeInQuad, ease, RAD } = DF;
+  const stage = document.getElementById('stage');
+  const cv = document.getElementById('trail');
+  const ctx = cv.getContext('2d');
+  let W = 0, H = 0, K = 1;
+
+  const d = makeDragonfly(stage, { hue: 8, rate: 30, phaseOffset: 170, amp: 28, bias: 6, alt: 40 });
+
+  function resize() {
+    W = stage.clientWidth; H = stage.clientHeight;
+    const dpr = devicePixelRatio || 1;
+    cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const k = clamp(Math.min(W, H) / 560, 0.42, 1.05);
+    if (Math.abs(k - K) > 0.01) { K = k; d.setSize(K); }
+    anchor.x = clamp(anchor.x, margin(), W - margin());
+    anchor.y = clamp(anchor.y, margin(), H - margin());
+  }
+  const margin = () => Math.max(70 * K, Math.min(W, H) * 0.14);
+  const anchor = { x: 0, y: 0 };
+  K = 0; resize();
+  anchor.x = W * 0.5; anchor.y = H * 0.48;
+  d.heading = rand(-40, 40);
+  addEventListener('resize', resize);
+
+  // 정지비행 흔들림: 서로 다른 주파수의 부드러운 노이즈
+  const wx = wobble(1.1), wy = wobble(0.9), wh = wobble(0.7), wa = wobble(0.8);
+  const nudge = { x: 0, y: 0, tx: 0, ty: 0, t: 1, next: rand(0.3, 1) };   // 가끔 하는 작은 위치 보정
+
+  let mode = 'hover', modeT = 0, hoverFor = rand(0.9, 2);
+  let plan = null;          // 다음 이동 계획
+  let baseHeading = d.heading;
+  const streak = [];        // 이동 잔상 (canvas)
+
+  function pickHover() {
+    const r = Math.random();
+    if (r < 0.15) return rand(0.12, 0.3);   // 가끔 연달아 두 번 다트
+    if (r < 0.75) return rand(0.8, 2.2);
+    return rand(2.2, 4.2);                  // 가끔 오래 멈춤
+  }
+
+  function planDart() {
+    const m = margin(), S = Math.min(W, H);
+    let best = null;
+    for (let i = 0; i < 12; i++) {
+      const dist = rand(0.16, 0.42) * S;
+      const ang = rand(0, Math.PI * 2);
+      const tx = anchor.x + Math.cos(ang) * dist, ty = anchor.y + Math.sin(ang) * dist;
+      if (tx < m || tx > W - m || ty < m || ty > H - m) continue;
+      best = { tx, ty, dist };
+      if (Math.random() < 0.6) break;
+    }
+    if (!best) best = { tx: rand(m, W - m), ty: rand(m, H - m) };
+    const dx = best.tx - anchor.x, dy = best.ty - anchor.y;
+    const dist = Math.hypot(dx, dy);
+    const bearing = Math.atan2(dy, dx) * RAD + 90;          // 이동 방향을 heading 각도로
+    const rel = angDiffDeg(d.heading, bearing);
+    let kind;
+    if (Math.abs(rel) < 28) kind = 'ahead';                  // 이미 앞쪽이면 그대로 출발
+    else if (Math.abs(rel) < 125 && Math.random() < 0.5) kind = 'slide';     // 몸은 그대로, 옆으로 미끄러짐
+    else if (Math.abs(rel) >= 125 && dist < S * 0.22 && Math.random() < 0.35) kind = 'slide'; // 짧은 뒷걸음
+    else kind = 'turn';                                      // 먼저 돌고 출발
+    const endHeading = kind === 'turn' ? bearing + rand(-10, 10)
+                    : kind === 'slide' ? d.heading + rel * rand(0.05, 0.18)
+                    : d.heading + rel * 0.6;
+    return {
+      kind, sx: anchor.x, sy: anchor.y, dx, dy, dist,
+      h0: d.heading, h1: endHeading,
+      yawDur: rand(0.13, 0.2),
+      wind: 0.075,                                         // 예비동작(움찔) 시간
+      dur: clamp(0.18 + (dist / S) * 0.3, 0.19, 0.31),     // 이동 시간: 멀수록 조금 더
+      over: rand(0.025, 0.05),                             // 오버슛 비율
+      settle: rand(0.22, 0.34),
+    };
+  }
+
+  function setMode(m) { mode = m; modeT = 0; }
+
+  loop((dt, t) => {
+    modeT += dt;
+    const S = Math.min(W, H);
+    let px = anchor.x, py = anchor.y;
+    let bankGoal = 0, pitchGoal = 0, altGoal = 40 + wa(t) * 4;
+    let offGoal = 170, ampGoal = 28;
+
+    // 정지비행 흔들림은 어느 상태에서나 깔림 (다트 중엔 약하게)
+    const calm = mode === 'hover' ? 1 : 0.3;
+    nudge.t += dt;
+    if (mode === 'hover' && (nudge.next -= dt) <= 0) {
+      nudge.next = rand(0.35, 1.3);
+      nudge.sx = nudge.x; nudge.sy = nudge.y;
+      nudge.tx = rand(-1, 1) * 5 * K; nudge.ty = rand(-1, 1) * 5 * K; nudge.t = 0;
+    }
+    const nt = easeOutQuart(nudge.t / 0.14);
+    nudge.x = lerp(nudge.sx || 0, nudge.tx, nt); nudge.y = lerp(nudge.sy || 0, nudge.ty, nt);
+    const driftX = (wx(t) * 2.2 * K + nudge.x) * calm, driftY = (wy(t) * 2.2 * K + nudge.y) * calm;
+
+    if (mode === 'hover') {
+      d.heading = baseHeading + wh(t) * 2.2;                 // 머리가 아주 조금 좌우로
+      // 미세 보정하는 순간, 몸 옆 방향으로 움직인 만큼 살짝 기울기
+      const hr = d.heading / RAD;
+      const lat = (nudge.tx - (nudge.sx || 0)) * Math.cos(hr) + (nudge.ty - (nudge.sy || 0)) * Math.sin(hr);
+      bankGoal = (lat / K) * 1.3 * (1 - nt);
+      if (modeT > hoverFor) {
+        plan = planDart();
+        setMode(plan.kind === 'turn' ? 'yaw' : 'wind');
+      }
+    } else if (mode === 'yaw') {
+      // 고개 홱 돌리기: 살짝 넘쳤다 돌아오는 ease-out-back
+      const e = easeOutBack(modeT / plan.yawDur, 1.6);
+      d.heading = plan.h0 + angDiffDeg(plan.h0, plan.h1) * e;
+      ampGoal = 34;
+      if (modeT > plan.yawDur + rand(0.03, 0.09)) { plan.h0 = d.heading; setMode('wind'); }
+    } else if (mode === 'wind') {
+      // 예비동작: 진행 반대쪽으로 아주 살짝 물러남 + 날개 세게
+      const e = easeInQuad(modeT / plan.wind);
+      const back = Math.min(6 * K, plan.dist * 0.03);
+      px -= (plan.dx / plan.dist) * back * Math.sin(Math.PI * e * 0.5);
+      py -= (plan.dy / plan.dist) * back * Math.sin(Math.PI * e * 0.5);
+      ampGoal = 40; offGoal = 110;
+      if (modeT > plan.wind) { plan.backX = px - anchor.x; plan.backY = py - anchor.y; setMode('dart'); }
+    } else if (mode === 'dart') {
+      const u = clamp(modeT / plan.dur, 0, 1);
+      const e = easeOutQuart(u) * (1 + plan.over);           // 목표를 살짝 지나침
+      px = plan.sx + plan.backX * (1 - u) + plan.dx * e;
+      py = plan.sy + plan.backY * (1 - u) + plan.dy * e;
+      if (plan.kind !== 'turn') d.heading = plan.h0 + angDiffDeg(plan.h0, plan.h1) * easeOutQuart(u);
+      // 몸 기준으로 옆 방향 성분만큼 기울기, 앞 성분만큼 머리 숙임 (끝에선 머리 들며 제동)
+      const hr = d.heading / RAD;
+      const fwd = (plan.dx * Math.sin(hr) - plan.dy * Math.cos(hr)) / plan.dist;
+      const lat = (plan.dx * Math.cos(hr) + plan.dy * Math.sin(hr)) / plan.dist;
+      const swell = Math.sin(Math.PI * Math.min(1, u * 1.3));
+      bankGoal = lat * 30 * swell;
+      pitchGoal = fwd * (u < 0.45 ? 12 : -9) * swell;
+      altGoal -= 7 * swell;
+      ampGoal = 40; offGoal = 70;                            // 전진할 땐 위상차가 작아짐
+      streak.push({ x: px, y: py, t });
+      if (u >= 1) setMode('settle');
+    } else if (mode === 'settle') {
+      // 지나친 만큼 되돌아오며 멈춤 (흔들리며 안정)
+      const u = clamp(modeT / plan.settle, 0, 1);
+      const back = 1 + plan.over * (1 - ease(u)) + Math.sin(u * Math.PI * 2) * 0.006 * (1 - u);
+      px = plan.sx + plan.dx * back; py = plan.sy + plan.dy * back;
+      const hr = d.heading / RAD;
+      const lat = (plan.dx * Math.cos(hr) + plan.dy * Math.sin(hr)) / plan.dist;
+      bankGoal = -lat * 9 * (1 - u);                           // 반대로 살짝 되감김
+      pitchGoal = -5 * (1 - u);
+      ampGoal = 32; offGoal = lerp(110, 170, u);
+      if (u >= 1) {
+        anchor.x = plan.sx + plan.dx; anchor.y = plan.sy + plan.dy;
+        hoverFor = pickHover();
+        baseHeading = d.heading - wh(t) * 2.2;                // 흔들림이 이어지도록
+        setMode('hover');
+      }
+    }
+
+    d.x = px + driftX; d.y = py + driftY;
+    const fast = mode === 'dart' ? 22 : 9;
+    d.bank = lerp(d.bank, bankGoal, Math.min(1, dt * fast));
+    d.pitch = lerp(d.pitch, pitchGoal, Math.min(1, dt * fast));
+    d.alt = lerp(d.alt, altGoal, Math.min(1, dt * 6));
+    d.amp = lerp(d.amp, ampGoal, Math.min(1, dt * 10));
+    d.phaseOffset = lerp(d.phaseOffset, offGoal, Math.min(1, dt * 8));
+    d.abdBend = wh(t * 1.7) * 2.5;                            // 배가 아주 살짝 살랑
+    d.update(dt);
+    d.render();
+
+    // 이동 잔상: 0.35초 동안 옅어지는 선
+    ctx.clearRect(0, 0, W, H);
+    while (streak.length && t - streak[0].t > 0.35) streak.shift();
+    if (streak.length > 1) {
+      ctx.lineCap = 'round';
+      const col = getComputedStyle(document.body).color;
+      for (let i = 1; i < streak.length; i++) {
+        const a = 1 - (t - streak[i].t) / 0.35;
+        ctx.globalAlpha = a * 0.28;
+        ctx.strokeStyle = col;
+        ctx.lineWidth = Math.max(1, 2.2 * K * a);
+        ctx.beginPath(); ctx.moveTo(streak[i - 1].x, streak[i - 1].y); ctx.lineTo(streak[i].x, streak[i].y); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+  });
+</script>
+</body>
+</html>

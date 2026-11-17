@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>나비 12 · 각도 실험실</title>
+<!-- 나는 모습을 결정하는 각도들을 슬라이더로 직접 바꿔 보는 실험실.
+     자동 비행을 켜면 진행 방향(heading)과 몸 기울기(bank)는 경로에서 자동 계산.
+     tilt 를 0으로 두면 탑뷰: 그때는 pitch·bank·날개 각도·그림자 밀림으로 입체감을 냄 -->
+<link rel="stylesheet" href="../../assets/butterfly.css">
+<style>
+  .stage { right: 250px; }
+  .panel {
+    position: fixed; top: 0; right: 0; bottom: 0; width: 250px; box-sizing: border-box;
+    padding: 12px 14px; overflow: auto; background: color-mix(in srgb, var(--sky-bot) 82%, var(--ink) 4%);
+    border-left: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
+    display: flex; flex-direction: column; gap: 9px; font-size: 12px;
+  }
+  .panel h2 { margin: 0; font-size: 12px; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+  .ctl { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: center; }
+  .ctl input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: #d9631e; margin: 0; }
+  .ctl output { font-family: ui-monospace, "JetBrains Mono", monospace; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .ctl small { grid-column: 1 / -1; color: var(--muted); font-size: 11px; line-height: 1.35; }
+  .graph { width: 100%; height: 64px; border-radius: 6px; background: color-mix(in srgb, var(--ink) 5%, transparent); }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .floor { position: absolute; width: 0; height: 0; transform-style: preserve-3d; }
+  .floor i { position: absolute; left: -400px; top: -400px; width: 800px; height: 800px;
+    background-image: linear-gradient(color-mix(in srgb, var(--ink) 9%, transparent) 1px, transparent 1px),
+                      linear-gradient(90deg, color-mix(in srgb, var(--ink) 9%, transparent) 1px, transparent 1px);
+    background-size: 40px 40px;
+    -webkit-mask-image: radial-gradient(closest-side, #000 40%, transparent); mask-image: radial-gradient(closest-side, #000 40%, transparent); }
+  @media (max-width: 560px) {
+    .stage { right: 0; bottom: 46%; }
+    .panel { top: 54%; width: auto; left: 0; border-left: 0; border-top: 1px solid color-mix(in srgb, var(--ink) 12%, transparent); }
+    .hint { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="stage" id="stage"><div class="floor" id="floor"><i></i></div></div>
+<p class="hint">값을 바꿔 보고 마음에 드는 숫자를 <b>그대로 코드에</b></p>
+
+<form class="panel" id="panel" onsubmit="return false">
+  <label class="row"><input type="checkbox" id="auto" checked> 자동 비행 (원 그리며)</label>
+  <h2>보는 각도</h2>
+  <div class="ctl"><label for="tilt">시점 기울기 tilt</label><output id="tiltV"></output>
+    <input type="range" id="tilt" min="0" max="80" value="38"><small>0 = 바로 위에서 내려다봄, 클수록 옆에서 봄</small></div>
+  <div class="ctl"><label for="persp">원근 perspective</label><output id="perspV"></output>
+    <input type="range" id="persp" min="300" max="2000" value="900"><small>작을수록 원근이 과장됨</small></div>
+  <h2>몸 방향</h2>
+  <div class="ctl"><label for="heading">진행 방향 heading</label><output id="headingV"></output>
+    <input type="range" id="heading" min="0" max="360" value="0"><small>자동 비행 중에는 경로 방향으로 자동</small></div>
+  <div class="ctl"><label for="bank">몸 기울기 bank</label><output id="bankV"></output>
+    <input type="range" id="bank" min="-40" max="40" value="0"><small>돌 때 안쪽으로 기울임. 자동 비행 중에는 자동</small></div>
+  <div class="ctl"><label for="pitch">앞뒤 기울기 pitch</label><output id="pitchV"></output>
+    <input type="range" id="pitch" min="-30" max="50" value="12"><small>+면 머리가 들림. 탑뷰(tilt 0)에서 입체감을 주는 값</small></div>
+  <div class="ctl"><label for="alt">높이 alt</label><output id="altV"></output>
+    <input type="range" id="alt" min="0" max="140" value="45"></div>
+  <h2>날갯짓</h2>
+  <div class="ctl"><label for="up">날개 최고 up</label><output id="upV"></output>
+    <input type="range" id="up" min="20" max="100" value="75"></div>
+  <div class="ctl"><label for="down">날개 최저 down</label><output id="downV"></output>
+    <input type="range" id="down" min="-50" max="20" value="-15"></div>
+  <div class="ctl"><label for="split">내려치기 비율 split</label><output id="splitV"></output>
+    <input type="range" id="split" min="20" max="70" value="47"><small>0.5 = 대칭 사인파(부드러움). 작을수록 내려치기가 빠름(힘참)</small></div>
+  <div class="ctl"><label for="flex">날개 유연함 flex</label><output id="flexV"></output>
+    <input type="range" id="flex" min="0" max="30" value="14"><small>0 = 빳빳한 판, 클수록 종이처럼 끝이 늦게 따라옴</small></div>
+  <div class="ctl"><label for="rate">초당 날갯짓 rate</label><output id="rateV"></output>
+    <input type="range" id="rate" min="3" max="80" value="15"></div>
+  <canvas class="graph" id="graph" width="440" height="128" aria-label="한 박자 동안의 날개 각도 그래프"></canvas>
+</form>
+
+<script src="../../assets/butterfly.js"></script>
+<script>
+  const { Butterfly, loop, flapAngle, lerp, clamp, angDiff, RAD } = BF;
+  const stage = document.getElementById('stage');
+  const floor = document.getElementById('floor');
+  const $ = (id) => document.getElementById(id);
+  const ids = ['tilt', 'persp', 'heading', 'bank', 'pitch', 'flex', 'alt', 'up', 'down', 'split', 'rate'];
+  const fmt = { tilt: v => v + '°', persp: v => v + 'px', heading: v => Math.round(v) + '°', bank: v => Math.round(v) + '°',
+                pitch: v => v + '°', flex: v => (v / 100).toFixed(2), alt: v => v + 'px', up: v => v + '°', down: v => v + '°', split: v => (v / 100).toFixed(2), rate: v => (v / 10).toFixed(1) + '/s' };
+  const val = (id) => +$(id).value;
+
+  let W, H;
+  const resize = () => { W = stage.clientWidth; H = stage.clientHeight; };
+  addEventListener('resize', resize); resize();
+
+  const b = new Butterfly(stage, { scale: Math.min(1.6, W / 300) });
+  let ang = 0, prevHeading = 0;
+
+  // 그래프: 한 박자 동안 날개 각도
+  const g = $('graph'), gx = g.getContext('2d');
+  function drawGraph() {
+    const w = g.width, h = g.height, up = val('up'), down = val('down'), split = val('split') / 100;
+    gx.clearRect(0, 0, w, h);
+    const y = (a) => h - 10 - ((a + 60) / 170) * (h - 20);
+    gx.strokeStyle = 'rgba(120,130,125,.4)'; gx.setLineDash([3, 4]);
+    gx.beginPath(); gx.moveTo(0, y(0)); gx.lineTo(w, y(0)); gx.stroke(); gx.setLineDash([]);
+    gx.strokeStyle = '#d9631e'; gx.lineWidth = 2.5; gx.beginPath();
+    for (let i = 0; i <= w; i++) { const a = flapAngle(i / w, up, down, split); i ? gx.lineTo(i, y(a)) : gx.moveTo(i, y(a)); }
+    gx.stroke();
+    gx.fillStyle = '#2f8f6a'; gx.beginPath(); gx.arc(b.phase * w, y(b.angle), 5, 0, 7); gx.fill();
+    gx.fillStyle = 'rgba(120,130,125,.9)'; gx.font = '18px system-ui'; gx.fillText('내려치기', 8, 22); gx.fillText('올리기', w * split + 8, 22);
+    gx.strokeStyle = 'rgba(120,130,125,.4)'; gx.beginPath(); gx.moveTo(w * split, 0); gx.lineTo(w * split, h); gx.stroke();
+  }
+
+  loop((dt) => {
+    ids.forEach((id) => { $(id + 'V').textContent = fmt[id](val(id)); });
+    stage.style.perspective = val('persp') + 'px';
+    Object.assign(b, { tilt: val('tilt'), pitch: val('pitch'), flex: val('flex') / 100, shadowShift: val('tilt') < 12 ? 0.6 : 0, alt: val('alt'), up: val('up'), down: val('down'), split: val('split') / 100, rate: val('rate') / 10 });
+
+    let cx = W / 2, cy = H / 2;
+    if ($('auto').checked) {
+      ang += dt * 0.55;
+      const rx = W * 0.28, ry = H * 0.22;
+      b.x = cx + Math.cos(ang) * rx + Math.sin(ang * 2.3) * 14;
+      b.y = cy + Math.sin(ang) * ry;
+      const vx = -Math.sin(ang) * rx, vy = Math.cos(ang) * ry;
+      b.heading = Math.atan2(vy, vx) * RAD + 90;
+      const turn = angDiff(prevHeading / RAD, b.heading / RAD) / Math.max(dt, 1e-3);
+      prevHeading = b.heading;
+      b.bank = lerp(b.bank, clamp(turn * 11, -32, 32), Math.min(1, dt * 5));
+      $('heading').value = ((b.heading % 360) + 360) % 360;
+      $('bank').value = b.bank;
+    } else {
+      b.x = cx; b.y = cy;
+      b.heading = val('heading'); b.bank = val('bank');
+    }
+    floor.style.left = cx + 'px'; floor.style.top = cy + 'px';
+    floor.firstElementChild.style.transform = `rotateX(${b.tilt}deg)`;
+    b.update(dt); b.render();
+    drawGraph();
+  });
+</script>
+</body>
+</html>

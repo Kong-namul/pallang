@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  꿀벌 02 · 8자 춤 (waggle dance)
+  춤추는 벌: 직진(엉덩이 흔들기 = 몸 전체 요잉 + 배 꺾기 + 날개 떨기) → 베지어 곡선으로 왼쪽/오른쪽 번갈아 돌아와 다시 직진.
+  흔들기는 처음·끝에서 약하고 가운데서 세며, 매 회 각도·길이가 조금씩 달라짐(진짜 춤도 흩어짐).
+  주변 벌들은 반응 속도가 제각각이라 늦게 고개를 돌리고, 몇 마리는 거리를 유지하며 따라 걸음.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>꿀벌 02 · 8자 춤</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  /* 벌집 위에서도 글씨가 읽히게 */
+  .hint, .ui { background: color-mix(in srgb, var(--sky-bot) 82%, transparent); padding: 3px 8px; border-radius: 6px; }
+  .hint { right: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+</style>
+</head>
+<body>
+<canvas class="fill" id="comb"></canvas>
+<canvas class="fill" id="trail"></canvas>
+<div class="stage" id="stage"></div>
+<p class="hint"><b>직진하며 엉덩이 흔들기</b> → 좌·우 번갈아 돌아오는 8자 · 주변 벌이 늦게 고개를 돌려 따라봄</p>
+<label class="ui"><input type="checkbox" id="showTrail" checked> 경로 보기</label>
+
+<script src="../../assets/bee.js"></script>
+<script>
+  const { makeBee, loop, clamp, lerp, rand, damp, angDiff, RAD, TAU } = BE;
+  const stage = document.getElementById('stage');
+  const comb = document.getElementById('comb');
+  const cctx = comb.getContext('2d');
+  const trail = document.getElementById('trail');
+  const tctx = trail.getContext('2d');
+  const toggle = document.getElementById('showTrail');
+  const dark = matchMedia('(prefers-color-scheme: dark)');
+  let W = 0, H = 0, U = 0, SC = 1, BL = 30;   // BL: 벌 몸길이(px)
+
+  // ---------------- 벌집 (육각형 격자) ----------------
+  function hash(i, j) {
+    const s = Math.sin(i * 127.1 + j * 311.7) * 43758.5453;
+    return s - Math.floor(s);
+  }
+  function drawComb() {
+    const dpr = devicePixelRatio || 1;
+    comb.width = W * dpr; comb.height = H * dpr;
+    cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const r = BL / 4.4;                        // 칸 반지름: 벌 몸이 3칸 남짓
+    const hw = Math.sqrt(3) * r;               // 뾰족한 위쪽(pointy-top) 육각형 가로 간격
+    cctx.fillStyle = '#e2b55a';
+    cctx.fillRect(0, 0, W, H);
+    for (let j = -1; j * r * 1.5 < H + r * 2; j++) {
+      for (let i = -1; i * hw < W + hw; i++) {
+        const cx = i * hw + (j & 1 ? hw / 2 : 0), cy = j * r * 1.5;
+        const h = hash(i, j);
+        const ri = r * 0.8;
+        cctx.beginPath();
+        for (let k = 0; k < 6; k++) {
+          const a = Math.PI / 6 + k * Math.PI / 3;
+          const x = cx + Math.cos(a) * ri, y = cy + Math.sin(a) * ri;
+          k ? cctx.lineTo(x, y) : cctx.moveTo(x, y);
+        }
+        cctx.closePath();
+        let g;
+        if (h < 0.2) {            // 밀랍 뚜껑
+          g = cctx.createRadialGradient(cx - ri * 0.3, cy - ri * 0.3, 0, cx, cy, ri);
+          g.addColorStop(0, '#f6e2ae'); g.addColorStop(1, '#e8c77e');
+        } else if (h < 0.48) {    // 꿀
+          g = cctx.createRadialGradient(cx - ri * 0.25, cy - ri * 0.3, 0, cx, cy, ri);
+          g.addColorStop(0, '#f2c25a'); g.addColorStop(0.65, '#e3a43a'); g.addColorStop(1, '#cf8d2a');
+        } else {                  // 빈 칸
+          g = cctx.createRadialGradient(cx, cy, 0, cx, cy, ri);
+          g.addColorStop(0, '#b98236'); g.addColorStop(0.7, '#c99545'); g.addColorStop(1, '#d6a654');
+        }
+        cctx.fillStyle = g;
+        cctx.fill();
+        if (h >= 0.2 && h < 0.48) {   // 꿀 반사광
+          cctx.fillStyle = 'rgba(255,248,220,0.4)';
+          cctx.beginPath();
+          cctx.ellipse(cx - ri * 0.3, cy - ri * 0.35, ri * 0.22, ri * 0.12, -0.6, 0, TAU);
+          cctx.fill();
+        }
+      }
+    }
+    // 가장자리를 살짝 어둡게 (가운데 춤판에 시선)
+    const v = cctx.createRadialGradient(W / 2, H / 2, U * 0.2, W / 2, H / 2, Math.hypot(W, H) * 0.6);
+    v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(40,20,0,0.35)');
+    cctx.fillStyle = v; cctx.fillRect(0, 0, W, H);
+    if (dark.matches) { cctx.fillStyle = 'rgba(8,6,2,0.5)'; cctx.fillRect(0, 0, W, H); }
+  }
+
+  function resize() {
+    W = stage.clientWidth; H = stage.clientHeight; U = Math.min(W, H);
+    SC = clamp(U / 380, 0.6, 1.5);
+    BL = 30 * SC;
+    const dpr = devicePixelRatio || 1;
+    trail.width = W * dpr; trail.height = H * dpr;
+    tctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawComb();
+    bees.forEach((b) => { b.scale = SC; });
+  }
+  const bees = [];
+  const followers = [];
+  addEventListener('resize', () => {
+    resize();
+    const c = C();
+    followers.forEach((f) => {     // 구경꾼은 춤판 기준 상대 위치로 옮김
+      f.b.x = f.gx = c.x + f.rx * BL; f.b.y = f.gy = c.y + f.ry * BL;
+      f.seen.x = dancer.x; f.seen.y = dancer.y;
+    });
+  });
+  dark.addEventListener && dark.addEventListener('change', drawComb);
+  resize();
+
+  // ---------------- 춤 경로 ----------------
+  const C = () => ({ x: W * 0.5, y: H * 0.47 });
+  const D = {
+    mode: 'pause', t: 0, dur: 0.3,
+    side: 1,                      // 돌아오는 쪽 (번갈아)
+    ang: 0, len: 0,               // 이번 직진의 방향(rad)·길이
+    sx: 0, sy: 0, ex: 0, ey: 0,   // 직진 시작·끝
+    lut: null, ls: 0, s: 0,       // 돌아오는 곡선 (길이 표)
+    hd: -Math.PI / 2, wag: 0,
+  };
+  const BASE_ANG = -Math.PI / 2 + 0.6;   // 태양 기준 먹이 방향(화면 위 = 태양)
+
+  function planRun() {
+    const c = C();
+    D.ang = BASE_ANG + rand(-0.09, 0.09);
+    D.len = BL * rand(1.75, 2.15);
+    const ux = Math.cos(D.ang), uy = Math.sin(D.ang);
+    D.sx = c.x - ux * D.len / 2; D.sy = c.y - uy * D.len / 2;
+    D.ex = c.x + ux * D.len / 2; D.ey = c.y + uy * D.len / 2;
+  }
+
+  function bez(p0, p1, p2, p3, t) {
+    const u = 1 - t;
+    return u * u * u * p0 + 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t * p3;
+  }
+  function planReturn(x0, y0) {
+    // 끝점 → 바깥으로 크게 돌아 → 다음 직진 시작점. 다음 직진 위치를 먼저 정함
+    planRun();
+    const ux = Math.cos(D.ang), uy = Math.sin(D.ang);
+    const px = -uy * D.side, py = ux * D.side;
+    const w = D.len * rand(0.55, 0.7);
+    const P = [
+      [x0, y0],
+      [x0 + ux * D.len * 0.35 + px * w * 0.95, y0 + uy * D.len * 0.35 + py * w * 0.95],
+      [D.sx - ux * D.len * 0.55 + px * w * 1.05, D.sy - uy * D.len * 0.55 + py * w * 1.05],
+      [D.sx, D.sy],
+    ];
+    const lut = [{ x: x0, y: y0, s: 0 }];
+    let s = 0;
+    for (let i = 1; i <= 60; i++) {
+      const t = i / 60;
+      const x = bez(P[0][0], P[1][0], P[2][0], P[3][0], t), y = bez(P[0][1], P[1][1], P[2][1], P[3][1], t);
+      const q = lut[lut.length - 1];
+      s += Math.hypot(x - q.x, y - q.y);
+      lut.push({ x, y, s });
+    }
+    D.lut = lut; D.ls = s; D.s = 0;
+  }
+  function onLut(s) {
+    const L = D.lut;
+    let i = 1;
+    while (i < L.length - 1 && L[i].s < s) i++;
+    const a = L[i - 1], b = L[i], k = clamp((s - a.s) / Math.max(1e-6, b.s - a.s), 0, 1);
+    return { x: lerp(a.x, b.x, k), y: lerp(a.y, b.y, k), tx: b.x - a.x, ty: b.y - a.y };
+  }
+
+  // ---------------- 벌들 ----------------
+  planRun();
+  const dancer = makeBee(stage, { x: D.sx, y: D.sy, heading: D.ang * RAD + 90, alt: 1, fly: 0, scale: SC });
+  D.hd = D.ang;
+
+  const nF = U < 360 ? 4 : 6;
+  for (let i = 0; i < nF; i++) {
+    const c = C();
+    const a = (i / nF) * TAU + rand(-0.3, 0.3);
+    const r = BL * rand(2.5, 3.3);
+    const b = makeBee(stage, { x: c.x + Math.cos(a) * r, y: c.y + Math.sin(a) * r * 0.85, alt: 0.5, fly: 0, scale: SC });
+    const hd = rand(0, TAU);
+    b.heading = hd * RAD + 90;
+    followers.push({
+      b, hd, rx: (b.x - c.x) / BL, ry: (b.y - c.y) / BL, gx: b.x, gy: b.y,
+      keen: i < 2,                       // 바짝 따라다니는 벌
+      react: rand(1.6, 4.5),             // 고개 돌리는 빠르기 (벌마다 다름)
+      lag: rand(0.15, 0.6), seen: { x: b.x, y: b.y }, // 늦게 알아챔: 춤꾼 위치를 지연해서 봄
+      next: rand(1, 4), groom: 0, flick: 0,
+    });
+  }
+  bees.push(dancer, ...followers.map((f) => f.b));
+  stage.appendChild(dancer.el);   // 춤꾼을 맨 위로
+
+  const pts = [];
+  let clock = 0;
+
+  loop((dt, now) => {
+    if (dt === 0) return;
+    clock += dt;
+    D.t += dt;
+    let fly = 0, bend = 0, yaw = 0, wantHd = D.hd, latOff = 0;
+    let kind = 0;
+
+    if (D.mode === 'pause') {
+      // 직진 직전: 몸을 방향에 맞추며 잠깐 멈칫
+      wantHd = D.ang;
+      dancer.x = damp(dancer.x, D.sx, 10, dt); dancer.y = damp(dancer.y, D.sy, 10, dt);
+      if (D.t > D.dur) { D.mode = 'run'; D.t = 0; D.dur = D.len / (BL * rand(2.0, 2.4)); D.wag = rand(0, 6); }
+    } else if (D.mode === 'run') {
+      const p = clamp(D.t / D.dur, 0, 1);
+      // 처음엔 살짝 밀고 나가고 끝에서 살짝 느려짐
+      const sp = p + 0.05 * Math.sin(TAU * p) * -1;
+      const ux = Math.cos(D.ang), uy = Math.sin(D.ang);
+      // 흔들기: 약 12Hz, 진폭은 가운데서 최대
+      D.wag += dt * TAU * 12.5;
+      const env = Math.pow(Math.sin(Math.PI * Math.min(1, p * 1.08)), 0.45);
+      const w = Math.sin(D.wag);
+      yaw = w * 0.42 * env;                        // 몸 전체 좌우 회전(rad)
+      bend = -w * 28 * env;                        // 배는 반대로 더 크게
+      latOff = -w * 1.6 * SC * env;                // 머리가 축이라 몸 중심은 옆으로 살짝
+      fly = 0.3 + 0.08 * Math.sin(D.wag * 1.7);    // 날개 떨기 (붕붕 소리)
+      dancer.x = D.sx + ux * D.len * sp - uy * latOff;
+      dancer.y = D.sy + uy * D.len * sp + ux * latOff;
+      wantHd = D.ang;
+      kind = 1;
+      if (p >= 1) {
+        D.mode = 'return'; D.t = 0;
+        planReturn(dancer.x, dancer.y);
+        D.side *= -1;
+      }
+    } else if (D.mode === 'return') {
+      // 걷기: 종종걸음처럼 속도가 출렁
+      const base = D.ls / 1.25;
+      const v = base * (0.75 + 0.45 * Math.pow(Math.sin(clock * 7.3), 2));
+      D.s = Math.min(D.ls, D.s + v * dt);
+      const q = onLut(D.s);
+      dancer.x = q.x; dancer.y = q.y;
+      wantHd = Math.atan2(q.ty, q.tx);
+      yaw = Math.sin(dancer.gait * TAU * 2) * 0.05;   // 걸음 따라 아주 살짝 흔들
+      kind = 2;
+      if (D.s >= D.ls - 0.5) { D.mode = 'pause'; D.t = 0; D.dur = rand(0.08, 0.22); }
+    }
+
+    // 방향: 돌아올 때는 빠르게, 직진 전에는 딱 맞춤
+    D.hd += angDiff(D.hd, wantHd) * (1 - Math.exp(-(D.mode === 'return' ? 12 : 16) * dt));
+    dancer.heading = (D.hd + yaw) * RAD + 90;
+    dancer.bend = damp(dancer.bend, bend, 30, dt);
+    dancer.fly = damp(dancer.fly, fly, fly > dancer.fly ? 25 : 10, dt);
+    dancer.wingHz = 34;
+    dancer.update(dt); dancer.render();
+
+    // 경로 기록
+    pts.push({ x: dancer.x, y: dancer.y, k: kind, t: clock });
+    while (pts.length && clock - pts[0].t > 7) pts.shift();
+    tctx.clearRect(0, 0, W, H);
+    if (toggle.checked) {
+      tctx.lineCap = 'round'; tctx.lineWidth = Math.max(1.2, 1.6 * SC);
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1], b = pts[i];
+        if (!b.k) continue;
+        const age = 1 - (clock - b.t) / 7;
+        tctx.globalAlpha = age * (b.k === 1 ? 0.85 : 0.45);
+        tctx.strokeStyle = b.k === 1 ? '#fff1c4' : '#5a3410';
+        tctx.beginPath(); tctx.moveTo(a.x, a.y); tctx.lineTo(b.x, b.y); tctx.stroke();
+      }
+      tctx.globalAlpha = 1;
+    }
+
+    // ---- 구경꾼 벌 ----
+    followers.forEach((f, i) => {
+      const b = f.b;
+      // 춤꾼 위치를 늦게 따라봄 (반응 지연)
+      f.seen.x = damp(f.seen.x, dancer.x, 1 / f.lag, dt);
+      f.seen.y = damp(f.seen.y, dancer.y, 1 / f.lag, dt);
+      const dx = f.seen.x - b.x, dy = f.seen.y - b.y, d = Math.hypot(dx, dy) || 1;
+      f.next -= dt;
+      if (f.keen) {
+        // 바짝 붙는 벌: 일정 거리 유지하며 따라 걸음 (조금씩 끊어서)
+        const keep = BL * 1.45;
+        if (f.next <= 0 || Math.abs(d - keep) > BL * 0.7) {
+          if (f.next <= 0) f.next = rand(0.25, 0.7);
+          const side = i % 2 ? 1 : -1;
+          const a = Math.atan2(-dy, -dx) + side * 0.25;
+          f.gx = f.seen.x + Math.cos(a) * keep; f.gy = f.seen.y + Math.sin(a) * keep;
+        }
+      } else if (f.next <= 0) {
+        // 가끔 자리 조금 옮기기 / 몸 다듬기 / 날개 털기
+        f.next = rand(1.8, 4.5);
+        const r = Math.random();
+        if (r < 0.45) {
+          const a = rand(0, TAU), m = BL * rand(0.2, 0.55);
+          const c = C();
+          f.gx = c.x + f.rx * BL + Math.cos(a) * m; f.gy = c.y + f.ry * BL + Math.sin(a) * m;
+        } else if (r < 0.75) f.groom = rand(0.6, 1.2);
+        else f.flick = 0.16;
+      }
+      // 서로 & 춤꾼과 겹치지 않게
+      let sx = 0, sy = 0;
+      bees.forEach((o) => {
+        if (o === b) return;
+        const ox = b.x - o.x, oy = b.y - o.y, od = Math.hypot(ox, oy) || 1;
+        const min = BL * (o === dancer ? 1.05 : 0.85);
+        if (od < min) { sx += ox / od * (min - od); sy += oy / od * (min - od); }
+      });
+      // 걷기 (속도 제한)
+      let mx = f.gx - b.x + sx * 2, my = f.gy - b.y + sy * 2;
+      const md = Math.hypot(mx, my);
+      const vmax = BL * (f.keen ? 2.4 : 1.3);
+      const moving = md > BL * 0.06;
+      if (moving) {
+        const step = Math.min(md, vmax * dt * clamp(md / (BL * 0.3), 0.3, 1));
+        b.x += mx / md * step; b.y += my / md * step;
+      }
+      // 고개: 걸을 땐 가는 쪽, 서 있으면 춤꾼 쪽
+      const face = Math.atan2(dy, dx);
+      const want = moving && md > BL * 0.2 ? Math.atan2(my, mx) : face;
+      f.hd += angDiff(f.hd, want) * (1 - Math.exp(-f.react * dt));
+      // 다듬기: 몸 빠르게 살짝 떨기
+      let g = 0;
+      if (f.groom > 0) { f.groom -= dt; g = Math.sin(clock * 26 + i) * 4; }
+      b.heading = f.hd * RAD + 90 + g;
+      b.bend = damp(b.bend, g * 1.5 + Math.sin(clock * 1.3 + i) * 3, 8, dt);
+      if (f.flick > 0) f.flick -= dt;
+      b.fly = damp(b.fly, f.flick > 0 ? 0.35 : 0, 18, dt);
+      b.antenna = d < BL * 2.2 ? 14 : 4;          // 가까우면 더듬이를 모아 춤꾼 쪽으로
+      b.update(dt); b.render();
+    });
+  });
+</script>
+</body>
+</html>

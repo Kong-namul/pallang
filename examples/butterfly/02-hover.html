@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>나비 02 · 떠 있는 나비</title>
+<!-- 순수 CSS. 불규칙한 흔들림 키프레임 + 다른 주기의 방향 흔들기 → 반복이 티 나지 않음
+     기법 참고: michaelbromley/css-experiments (css-3d-butterfly) 의 hover 키프레임 아이디어 -->
+<link rel="stylesheet" href="../../assets/butterfly.css">
+<style>
+  .bf { left: 50%; top: 48%; --s: 1.3; --flap: 1.3s;
+        animation: drift 4.6s ease-in-out infinite alternate; }
+  /* 위치 흔들림: 점들을 일부러 불규칙하게 */
+  @keyframes drift {
+    0%   { translate: 0 0; }
+    12%  { translate: -14px 10px; }
+    23%  { translate: -22px 22px; }
+    37%  { translate: -6px 26px; }
+    48%  { translate: 10px 6px; }
+    61%  { translate: 24px -14px; }
+    72%  { translate: 12px -22px; }
+    84%  { translate: 20px -6px; }
+    100% { translate: -4px 4px; }
+  }
+  /* 방향 흔들림: 5.3초 주기 (위치 4.6초와 어긋나게) */
+  .bf-plane { animation: sway 5.3s ease-in-out infinite alternate; }
+  @keyframes sway {
+    0%   { rotate: z -14deg; }
+    35%  { rotate: z 6deg; }
+    60%  { rotate: z -4deg; }
+    100% { rotate: z 12deg; }
+  }
+  /* 높이: 3.7초 주기 */
+  .bf-rig { --alt: 46px; }
+  .bf-shadow { opacity: .8; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="bf bf--css">
+    <div class="bf-plane"><div class="bf-shadow"></div><div class="bf-rig">
+      <div class="bf-wing bf-wing--l"><span style="--i:0"><i></i><span style="--i:1"><i></i><span style="--i:2"><i></i><span style="--i:3"><i></i><span style="--i:4"><i></i><span style="--i:5"><i></i><span style="--i:6"><i></i><span style="--i:7"><i></i><span style="--i:8"><i></i><span style="--i:9"><i></i></span></span></span></span></span></span></span></span></span></span></div><div class="bf-wing bf-wing--r"><span style="--i:0"><i></i><span style="--i:1"><i></i><span style="--i:2"><i></i><span style="--i:3"><i></i><span style="--i:4"><i></i><span style="--i:5"><i></i><span style="--i:6"><i></i><span style="--i:7"><i></i><span style="--i:8"><i></i><span style="--i:9"><i></i></span></span></span></span></span></span></span></span></span></span></div><div class="bf-body"></div>
+    </div></div>
+  </div>
+</div>
+<p class="hint">주기가 다른 키프레임 3개를 겹쳐 <b>반복이 안 보이게</b></p>
+</body>
+</html>

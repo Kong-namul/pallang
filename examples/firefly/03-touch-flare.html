@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  반딧불이 03 · 톡 건드리면 번쩍 (터치 반응)
+  건드린 반딧불이: 잠깐 빛을 죽이며 움찔(예비동작) → 확 밝아짐 → 천천히 꺼지며 진정(회복), 잠시 다시 안 깜빡임.
+  그 번쩍임이 거리만큼 늦게 이웃에게 번져 나감 (지연 = 거리 ÷ 전파 속도, 멀수록 약하게).
+  포인터를 가만히 두면 가까운 몇 마리가 손바닥에 모이듯 천천히 다가와 주위를 맴돌고, 휙 움직이면 놀라 흩어짐.
+  아무것도 안 해도 각자 박자로 깜빡이며 떠다님. pointer 이벤트라 마우스·터치 모두 동작. ※ 밤 장면 전용 자체 색.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>반딧불이 03 · 톡 건드리면 번쩍</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  body { background: #05090d; }
+  canvas.fill { touch-action: none; cursor: pointer; }
+  .hint { color: rgba(196, 214, 186, 0.62); }
+  .hint b { color: #eaf6c8; }
+</style>
+</head>
+<body>
+<canvas class="fill" id="cv"></canvas>
+<p class="hint"><b>톡</b> 건드리기 · 가만히 대면 모이고, 휙 움직이면 흩어짐</p>
+
+<script>
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const ease = (t) => 0.5 - 0.5 * Math.cos(Math.PI * clamp(t, 0, 1));
+  let W = 0, H = 0, S = 0, K = 1, dpr = 1;
+
+  function makeSprite(r, g, b) {
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const x = c.getContext('2d');
+    const gr = x.createRadialGradient(64, 64, 0, 64, 64, 64);
+    gr.addColorStop(0, 'rgba(255,255,235,1)');
+    gr.addColorStop(0.08, `rgba(${r},${g},${b},0.95)`);
+    gr.addColorStop(0.22, `rgba(${r},${g},${b},0.42)`);
+    gr.addColorStop(0.5, `rgba(${r},${g},${b},0.12)`);
+    gr.addColorStop(1, `rgba(${r},${g},${b},0)`);
+    x.fillStyle = gr; x.fillRect(0, 0, 128, 128);
+    return c;
+  }
+  const sprites = [makeSprite(214, 255, 110), makeSprite(236, 250, 120), makeSprite(180, 250, 120)];
+
+  const bg = document.createElement('canvas'), bgx = bg.getContext('2d');
+  function paintBackdrop() {
+    bg.width = W * dpr; bg.height = H * dpr;
+    bgx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const sky = bgx.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, '#05090f'); sky.addColorStop(0.6, '#0a1517'); sky.addColorStop(1, '#0e1d16');
+    bgx.fillStyle = sky; bgx.fillRect(0, 0, W, H);
+    for (let i = 0; i < W * H / 5000; i++) {
+      const y = Math.pow(Math.random(), 1.6) * H * 0.5;
+      bgx.globalAlpha = rand(0.12, 0.5) * (1 - y / (H * 0.5));
+      bgx.fillStyle = '#cfd8ea';
+      bgx.fillRect(rand(0, W), y, rand(0.6, 1.3), rand(0.6, 1.3));
+    }
+    bgx.globalAlpha = 1;
+    bgx.fillStyle = '#060e0b';
+    bgx.beginPath(); bgx.moveTo(0, H);
+    for (let x = 0; x <= W + 16; x += 16) bgx.lineTo(x, H * 0.84 - Math.abs(Math.sin(x * 0.012) * 24 + Math.sin(x * 0.043) * 9) * K);
+    bgx.lineTo(W, H); bgx.fill();
+  }
+
+  /* ---------- 반딧불이 ---------- */
+  let flies = [];
+  function makeFly() {
+    const z = Math.pow(Math.random(), 0.8);
+    const f = {
+      x: rand(0, W), y: rand(H * 0.15, H * 0.82), z,
+      a: rand(0, Math.PI * 2), turn: 0, speed: rand(7, 14) * (0.45 + z * 0.75),
+      ex: 0, ey: 0,                     // 놀람·반동 같은 바깥 힘 (점점 줄어듦)
+      g: 0, orb: rand(0, 6.28), orbR: rand(0.5, 1), orbSp: rand(0.25, 0.55) * (Math.random() < 0.5 ? -1 : 1),
+      bobF: rand(0.5, 1.1), bobP: rand(0, 6.28), bobA: rand(2, 5),
+      bright: rand(0.65, 1) * (0.45 + 0.55 * z),
+      sprite: sprites[(Math.random() * sprites.length) | 0],
+      tempo: rand(0.75, 1.35), I: 0, flare: null,
+    };
+    newFlash(f, true);
+    return f;
+  }
+  function newFlash(f, first, rest = 0) {
+    const calm = f.g > 0.5 ? 0.55 : 1;                       // 손 안에 모인 애들은 더 자주 은은하게
+    f.t = first ? -rand(0, 5) : -(rand(1.4, 4.5) * f.tempo * calm + rest);
+    f.rise = rand(0.28, 0.5); f.peak = rand(0.06, 0.11); f.fade = rand(0.7, 1.3); f.amp = rand(0.75, 1);
+  }
+  function envelope(f) {
+    const t = f.t;
+    if (t < 0) return 0;
+    if (t < f.rise) { const u = t / f.rise; return 0.62 * u * u; }
+    const s = t - f.rise;
+    if (s < f.peak) { const u = s / f.peak; return 0.62 + 0.38 * Math.sin(Math.PI * u) - 0.1 * u; }
+    const q = (s - f.peak) / f.fade;
+    return 0.52 * Math.exp(-q * 3.6) * (1 - clamp(q - 0.85, 0, 1));
+  }
+  // 번쩍(flare): 예비동작(빛 죽임) → 빠른 상승 → 짧은 최고점 → 긴 꺼짐
+  function flareEnv(fl) {
+    const t = fl.t - fl.delay;
+    if (t < 0) return { v: 0, hush: 0 };
+    const dip = fl.dip;
+    if (t < dip) return { v: 0, hush: t / dip };            // 움찔: 원래 빛을 눌러 끔
+    const s = t - dip;
+    const r = fl.touched ? 0.07 : 0.13;
+    if (s < r) { const u = s / r; return { v: fl.amp * (1 - (1 - u) * (1 - u)), hush: 1 }; }
+    const q = s - r;
+    if (q < 0.08) return { v: fl.amp * (1 + 0.15 * Math.sin(Math.PI * q / 0.08)), hush: 1 };
+    const fq = (q - 0.08) / 1.5;
+    return { v: fl.amp * Math.exp(-fq * 3.2), hush: clamp(1 - fq * 2, 0, 1), done: fq > 1.3 };
+  }
+
+  function resize() {
+    W = innerWidth; H = innerHeight; S = Math.min(W, H); K = S / 700; dpr = Math.min(2, devicePixelRatio || 1);
+    cv.width = W * dpr; cv.height = H * dpr;
+    paintBackdrop();
+    const n = clamp(Math.round(W * H / 14000), 30, 50);
+    while (flies.length < n) flies.push(makeFly());
+    flies.length = n;
+    flies.forEach((f) => { f.x = clamp(f.x, 0, W); f.y = clamp(f.y, H * 0.1, H * 0.88); });
+    flies.sort((a, b) => a.z - b.z);
+  }
+  addEventListener('resize', resize); resize();
+
+  /* ---------- 포인터 ---------- */
+  const ptr = { x: 0, y: 0, vx: 0, vy: 0, on: false, t: 0, still: 0 };
+  let gathered = new Set();
+  const waves = [];
+  cv.addEventListener('pointermove', (e) => {
+    const now = performance.now() / 1000, dt = Math.max(0.008, now - ptr.t);
+    if (ptr.on) { ptr.vx = lerp(ptr.vx, (e.clientX - ptr.x) / dt, 0.5); ptr.vy = lerp(ptr.vy, (e.clientY - ptr.y) / dt, 0.5); }
+    ptr.x = e.clientX; ptr.y = e.clientY; ptr.t = now; ptr.on = true;
+  });
+  cv.addEventListener('pointerleave', () => { ptr.on = false; ptr.still = 0; });
+  cv.addEventListener('pointerup', (e) => { if (e.pointerType !== 'mouse') { ptr.on = false; ptr.still = 0; } });
+  cv.addEventListener('pointerdown', (e) => {
+    ptr.x = e.clientX; ptr.y = e.clientY; ptr.on = true; ptr.vx = ptr.vy = 0; ptr.t = performance.now() / 1000;
+    // 가장 가까운 반딧불이 (눈에 보이는 빛 크기 + 여유만큼까지 '건드림'으로 인정)
+    let best = null, bd = Infinity;
+    for (const f of flies) {
+      const d = Math.hypot(f.x - e.clientX, f.y - e.clientY) - (14 + 20 * f.z) * K;
+      if (d < bd) { bd = d; best = f; }
+    }
+    if (best && bd < 34 * K + 12) touch(best);
+  });
+
+  function touch(f0) {
+    const now = performance.now() / 1000;
+    waves.push({ x: f0.x, y: f0.y, t0: now });
+    const speed = S * 0.55;                                  // 번짐 속도 (px/s)
+    for (const f of flies) {
+      const d = Math.hypot(f.x - f0.x, f.y - f0.y);
+      const touched = f === f0;
+      if (!touched && (d > S * 0.75 || (f.flare && f.flare.t < f.flare.delay + 0.6))) continue;
+      const amp = touched ? 1.35 : 1.05 * Math.exp(-d / (S * 0.4)) * rand(0.75, 1.05);
+      if (!touched && amp < 0.12) continue;
+      f.flare = { t: 0, delay: touched ? 0 : d / speed + rand(0, 0.06), amp, touched, dip: touched ? 0.07 : 0.03 };
+    }
+    // 건드린 애는 움찔하며 살짝 튕겨 나감
+    const a = Math.atan2(f0.y - ptr.y, f0.x - ptr.x) + rand(-0.5, 0.5);
+    f0.ex += Math.cos(a) * 70 * K; f0.ey += Math.sin(a) * 70 * K - 30 * K;
+    gathered.delete(f0); f0.g = Math.min(f0.g, 0.3);
+  }
+
+  function gatherNear() {
+    const n = clamp(Math.round(flies.length * 0.12), 3, 6);
+    const list = flies.map((f) => ({ f, d: Math.hypot(f.x - ptr.x, f.y - ptr.y) }))
+      .filter((o) => o.d < S * 0.6).sort((a, b) => a.d - b.d).slice(0, n);
+    gathered = new Set(list.map((o) => o.f));
+    for (const f of gathered) f.orb = Math.atan2(f.y - ptr.y, f.x - ptr.x);   // 지금 있는 쪽에서부터 맴돌기 시작
+  }
+
+  function scatter() {
+    gathered.clear();
+    for (const f of flies) {
+      const dx = f.x - ptr.x, dy = f.y - ptr.y, d = Math.hypot(dx, dy);
+      if (d > S * 0.32) continue;
+      const s = (1 - d / (S * 0.32)) * 140 * K;
+      f.ex += (dx / (d || 1)) * s; f.ey += (dy / (d || 1)) * s;
+      f.g = 0;
+      // 놀라서 짧게 깜빡
+      if (!f.flare) f.flare = { t: 0, delay: rand(0, 0.12), amp: rand(0.35, 0.55), touched: false, dip: 0.02 };
+    }
+  }
+
+  function step(f, dt, t) {
+    // 배회 속도
+    f.turn += (rand(-1, 1) * 2.6 - f.turn * 1.3) * dt;
+    const cx = W / 2 - f.x, cy = H * 0.52 - f.y;
+    const out = Math.max(Math.abs(cx) / (W * 0.55), Math.abs(cy) / (H * 0.4)) - 1;
+    if (out > -0.15) {
+      let d = Math.atan2(cy, cx) - f.a;
+      d = Math.atan2(Math.sin(d), Math.cos(d));
+      f.turn += d * (out + 0.15) * 6 * dt;
+    }
+    f.a += f.turn * dt;
+    const sp = f.speed * K * (1 - f.I * 0.3);
+    let vx = Math.cos(f.a) * sp, vy = Math.sin(f.a) * sp * 0.6 - f.I * 8 * K;
+
+    // 손에 모이기: 포인터 둘레의 고리 위 자기 자리로 천천히, 그 자리는 계속 돔
+    const want = gathered.has(f) && ptr.on ? 1 : 0;
+    f.g += ((want ? 0.7 : -1.4) * dt);
+    f.g = clamp(f.g, 0, 1);
+    if (f.g > 0) {
+      f.orb += f.orbSp * dt * (1 + Math.sin(t * 0.7 + f.bobP) * 0.5);
+      const R = (34 + 40 * f.orbR) * K * (1 + Math.sin(t * 0.9 + f.bobP) * 0.15);
+      const tx = ptr.x + Math.cos(f.orb) * R, ty = ptr.y + Math.sin(f.orb) * R * 0.8;
+      let sx = (tx - f.x) * 1.6, sy = (ty - f.y) * 1.6;
+      const m = Math.hypot(sx, sy), lim = 70 * K;
+      if (m > lim) { sx *= lim / m; sy *= lim / m; }
+      const e = ease(f.g);
+      vx = lerp(vx, sx, e); vy = lerp(vy, sy, e);
+    }
+    f.x += (vx + f.ex) * dt; f.y += (vy + f.ey) * dt;
+    const damp = Math.exp(-dt * 2.4);
+    f.ex *= damp; f.ey *= damp;
+
+    // 자기 박자 깜빡임 + 번쩍(flare)
+    f.t += dt;
+    if (f.t > f.rise + f.peak + f.fade * 1.4) newFlash(f, false);
+    let I = envelope(f) * f.amp;
+    if (f.flare) {
+      f.flare.t += dt;
+      const r = flareEnv(f.flare);
+      I = Math.max(I * (1 - r.hush), r.v);
+      if (r.done) { f.flare = null; newFlash(f, false, rand(0.8, 2)); }   // 회복: 한동안 쉼
+    }
+    f.I = I;
+  }
+
+  let last = null, lastScatter = 0;
+  function frame(now) {
+    const dt = last == null ? 0 : Math.min(0.05, (now - last) / 1000);
+    last = now;
+    const t = now / 1000;
+
+    // 포인터 상태: 가만히 → 모으기 / 빠르게 → 흩트리기 / 움직임 → 놓아줌
+    if (t - ptr.t > 0.06) { ptr.vx *= Math.exp(-dt * 12); ptr.vy *= Math.exp(-dt * 12); }
+    const ps = Math.hypot(ptr.vx, ptr.vy);
+    if (ptr.on && ps > 1100 * K) { if (t - lastScatter > 0.4) { scatter(); lastScatter = t; } ptr.still = 0; }
+    else if (ptr.on && ps < 60 * K) { ptr.still += dt; if (ptr.still > 0.45 && !gathered.size) gatherNear(); }
+    else { ptr.still = 0; if (ps > 260 * K) gathered.clear(); }
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+    ctx.drawImage(bg, 0, 0, W, H);
+    ctx.globalCompositeOperation = 'lighter';
+    // 번짐 고리 (아주 옅게)
+    for (let i = waves.length - 1; i >= 0; i--) {
+      const w = waves[i], age = t - w.t0;
+      if (age > 1.4) { waves.splice(i, 1); continue; }
+      ctx.globalAlpha = 0.1 * (1 - age / 1.4);
+      ctx.strokeStyle = '#c8ff70'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(w.x, w.y, age * S * 0.55, 0, Math.PI * 2); ctx.stroke();
+    }
+    for (const f of flies) {
+      step(f, dt, t);
+      const y = f.y + Math.sin(t * f.bobF + f.bobP) * f.bobA * K;
+      const I = f.I * f.bright;
+      const R = (20 + 40 * f.z) * K;
+      const glow = Math.max(I, 0.035 * f.bright);
+      ctx.globalAlpha = clamp(glow * 1.2, 0, 1);
+      const sz = R * (0.55 + 0.75 * Math.min(glow, 1.3));
+      ctx.drawImage(f.sprite, f.x - sz, y - sz, sz * 2, sz * 2);
+      if (I > 0.22) {
+        ctx.globalAlpha = clamp((I - 0.22) * 0.3, 0, 0.4);
+        const big = R * 3.4 * (I > 1 ? 1.2 : 1);
+        ctx.drawImage(f.sprite, f.x - big, y - big, big * 2, big * 2);
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>

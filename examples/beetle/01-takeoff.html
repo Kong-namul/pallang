@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>풍뎅이 01 · 딱지날개 열고 이륙</title>
+<!-- 예비동작(웅크렸다 밀기) → 딱지날개가 "탁" 튕기며 열림(오버슈트) → 뒷날개가 두 번에 나눠 펴짐 → 붕붕 떨며 헛뜀 한 번
+     → 몸을 가파르게 세운 채 무겁게 떠오름. 경로는 베지어 곡선이지만 실제 위치는 스프링으로 늦게 따라가서 출렁이고,
+     옆으로 가속할 때마다 몸이 진자처럼 흔들림. 착지하면 통통 튀고, 날개를 접어 넣은 뒤 딱지날개를 닫음.
+     매 회 경로·높이·시간이 달라짐. 그림자는 높이에 따라 몸에서 멀어지고 흐려짐. -->
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  .floor { position: absolute; left: 0; top: 0; width: 0; height: 0; transform-style: preserve-3d; }
+  .floor svg { position: absolute; overflow: visible; }
+  .steps { position: fixed; top: 10px; left: 0; right: 0; display: flex; justify-content: center; gap: 4px; font-size: 11px; flex-wrap: wrap; padding: 0 8px; }
+  .steps span { padding: 2px 8px; border-radius: 999px; color: var(--muted); transition: background .25s, color .25s; }
+  .steps span.on { background: var(--accent); color: #fff; }
+</style>
+</head>
+<body>
+<div class="stage" id="stage">
+  <div class="floor" id="floor">
+    <svg id="leaf" viewBox="0 0 200 100">
+      <defs>
+        <linearGradient id="lf" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" style="stop-color: color-mix(in srgb, var(--leaf) 80%, #fff)"/>
+          <stop offset="1" style="stop-color: color-mix(in srgb, var(--leaf) 85%, #000)"/>
+        </linearGradient>
+      </defs>
+      <path d="M-14 52 L6 50" style="stroke: color-mix(in srgb, var(--leaf) 70%, #000)" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M5 50 C38 6 122 -6 197 49 C124 104 40 94 5 50Z" fill="url(#lf)"/>
+      <path d="M6 50 C60 44 130 44 196 49" fill="none" style="stroke: color-mix(in srgb, var(--leaf) 60%, #fff)" stroke-width="1.1" opacity=".7"/>
+      <g fill="none" style="stroke: color-mix(in srgb, var(--leaf) 65%, #fff)" stroke-width=".6" opacity=".5">
+        <path d="M30 47 C40 34 48 26 58 20"/><path d="M60 46 C70 32 80 22 92 14"/><path d="M92 46 C104 32 114 24 128 18"/><path d="M124 47 C136 36 146 30 160 26"/>
+        <path d="M30 51 C42 62 50 70 60 78"/><path d="M62 51 C74 64 84 74 96 82"/><path d="M94 51 C106 64 118 72 132 78"/><path d="M126 51 C138 60 150 66 162 70"/>
+      </g>
+      <ellipse cx="80" cy="34" rx="46" ry="10" fill="#fff" opacity=".08" transform="rotate(-8 80 34)"/>
+    </svg>
+  </div>
+</div>
+<div class="steps" id="steps"><span>쉼</span><span>웅크림</span><span>딱지날개</span><span>뒷날개</span><span>붕붕</span><span>비행</span><span>착지</span><span>접기</span></div>
+<p class="hint"><b>무겁게</b> 떠서 비틀비틀 · 착지하면 날개 접고 딱지날개 닫기</p>
+
+<script src="../../assets/beetle.js"></script>
+<script>
+  const { makeBeetle, Gait, Spring, loop, makeNoise, clamp, lerp, rand, ease, easeOut, easeIn, easeOutBack, smooth, angDiff, RAD, TAU } = BT;
+  const stage = document.getElementById('stage');
+  const floor = document.getElementById('floor');
+  const leaf = document.getElementById('leaf');
+  const steps = [...document.querySelectorAll('#steps span')];
+  const TILT = 42, COS = Math.cos(TILT / RAD), SIN = Math.sin(TILT / RAD);
+  let W, H, OY, CX;
+
+  const b = makeBeetle(stage, { tilt: TILT, heading: rand(-40, 40) });
+  function resize() {
+    W = stage.clientWidth; H = stage.clientHeight;
+    OY = H * 0.6; CX = W / 2;
+    b.oy = OY;
+    b.scale = clamp(Math.min(W, H / 0.8) / 330, 0.6, 1.7);
+    floor.style.transform = `translate3d(${CX}px,${OY}px,0) rotateX(${TILT}deg)`;
+    const lw = Math.min(W * 0.95, (H / COS) * 1.05);
+    leaf.style.width = lw + 'px'; leaf.style.height = lw / 2 + 'px';
+    leaf.style.left = -lw / 2 + 'px'; leaf.style.top = -lw / 4 + 'px';
+    leaf.style.transform = 'rotate(-14deg)';
+  }
+  addEventListener('resize', resize); resize();
+  b.x = CX + rand(-20, 20); b.y = OY + rand(-10, 10);
+  const g = new Gait(b, { stride: 11 });
+
+  /* ---------- 공용 상태 ---------- */
+  const ants = [0, 1].map(() => ({ a: new Spring(-62, 240, 15), b: new Spring(-16, 280, 15), fan: new Spring(0.35, 200, 14), next: 0 }));
+  const flapN = makeNoise(0.7), wob = [makeNoise(0.45), makeNoise(0.6), makeNoise(1.7)];
+  let wing = { phase: 0, rate: 0, amp: 1, beatAmp: 1 };
+  let st = '', t = 0, D = {};
+  const STEP = { rest: 0, crouch: 1, push: 1, pop: 2, unfold: 3, buzz: 4, fly: 5, land: 6, fold: 7, close: 7 };
+  function go(s) { st = s; t = 0; steps.forEach((el, i) => el.classList.toggle('on', i === STEP[s])); }
+
+  // 날갯짓: 내려치기 45%, 박자마다 세기 랜덤
+  function flapStep(dt, up = 74, down = -32) {
+    wing.phase += dt * wing.rate;
+    if (wing.phase >= 1) { wing.phase %= 1; wing.beatAmp = rand(0.75, 1.15); }
+    const p = wing.phase, sp = 0.45;
+    const k = p < sp ? ease(p / sp) : 1 - ease((p - sp) / (1 - sp));
+    const elev = lerp(up, down, k) * wing.amp * wing.beatAmp;
+    for (let i = 0; i < 2; i++) {
+      b.wingElev[i] = elev + (i ? 2 : -2) * flapN(performance.now() / 1000);
+      b.wingSweep[i] = 20 * Math.sin(p * TAU) * wing.amp;
+    }
+  }
+  function antennae(dt, alert) {
+    ants.forEach((A, i) => {
+      if ((A.next -= dt) <= 0) {
+        if (alert) { A.a.target = -54 + rand(-6, 6); A.b.target = rand(-8, 4); A.fan.target = rand(0.8, 1); A.next = rand(0.15, 0.4); }
+        else { A.a.target = -62 + rand(-20, 16); A.b.target = rand(-34, 2); A.fan.target = rand(0.2, 0.7); A.next = rand(0.25, 1.4); }
+      }
+      b.ant[i].a = A.a.step(dt); b.ant[i].b = A.b.step(dt); b.ant[i].fan = A.fan.step(dt);
+    });
+  }
+
+  /* ---------- 비행 경로 ---------- */
+  let F = null;
+  const bez = (P, u) => {
+    const v = 1 - u;
+    return { x: v * v * v * P[0].x + 3 * v * v * u * P[1].x + 3 * v * u * u * P[2].x + u * u * u * P[3].x,
+             y: v * v * v * P[0].y + 3 * v * v * u * P[1].y + 3 * v * u * u * P[2].y + u * u * u * P[3].y };
+  };
+  const screenY = (y, alt) => OY + (y - OY) * COS - alt * b.scale * SIN;
+  function planFlight() {
+    const m = Math.min(W, H) * 0.09;
+    const ok = (p, alt) => p.x > m && p.x < W - m && screenY(p.y, alt) > m + 26 && screenY(p.y, 0) < H - m - 16;
+    let R = Math.min(W * 0.36, (H / COS) * 0.3);
+    for (let tries = 0; tries < 60; tries++) {
+      if (tries && tries % 15 === 0) R *= 0.8;
+      const P0 = { x: b.x, y: b.y };
+      const h0 = (b.heading + rand(-25, 25)) / RAD;
+      const P1 = { x: P0.x + Math.sin(h0) * R * 1.05, y: P0.y - Math.cos(h0) * R * 1.05 };
+      const a3 = rand(0, TAU), r3 = rand(0.05, 0.28) * R;
+      const P3 = { x: CX + Math.cos(a3) * r3, y: OY + Math.sin(a3) * r3 * 0.8 };
+      const dIn = rand(0, TAU);
+      const P2 = { x: P3.x - Math.cos(dIn) * R * 0.95, y: P3.y - Math.sin(dIn) * R * 0.95 };
+      const P = [P0, P1, P2, P3];
+      const amax = rand(48, 78);
+      let good = Math.hypot(P3.x - P0.x, P3.y - P0.y) > R * 0.12;
+      for (let k = 0; k <= 24 && good; k++) {
+        const u = k / 24;
+        good = ok(bez(P, u), amax * smooth(0, 0.35, u) * (1 - smooth(0.68, 1, u)) + 10);
+      }
+      if (good) return { P, amax, T: rand(3.1, 4.3), vx: 0, vy: 0, bank: 0, sw: 0, swV: 0, pw: 0, pwV: 0, lastH: b.heading };
+    }
+    return null;
+  }
+  // 비행 전, 앞이 막혀 있으면 제자리에서 돌아서 탁 트인 쪽을 봄
+  function goodHeading() {
+    const dx = CX - b.x, dy = OY - b.y;
+    return Math.hypot(dx, dy) < 30 ? b.heading : Math.atan2(dx, -dy) * RAD + rand(-35, 35);
+  }
+
+  /* ---------- 다리 ---------- */
+  const DANGLE = [{ fem: -40, tib: -42, lift: -26 }, { fem: 12, tib: 40, lift: -44 }, { fem: 46, tib: 36, lift: -40 }];
+  function legsDangle(dt, k, swing) {
+    b.legs.forEach((L) => {
+      const d = DANGLE[L.i % 3];
+      L.ik = false;
+      const fem = d.fem + swing * 0.5 * L.side + (L.i % 3 === 0 ? -k * 10 : 0);
+      L.fem = lerp(L.fem, fem, Math.min(1, dt * 7));
+      L.tib = lerp(L.tib, fem + d.tib, Math.min(1, dt * 6));
+      L.lift = lerp(L.lift, d.lift + k * 12, Math.min(1, dt * 5));
+    });
+  }
+
+  /* ---------- 상태 진행 ---------- */
+  let turnTo = null;
+  function start() { go('rest'); D.rest = rand(1.3, 2.4); turnTo = goodHeading(); }
+  start();
+
+  const altS = new Spring(4, 300, 10), pitchS = new Spring(0, 160, 10), rollS = new Spring(0, 200, 14);
+
+  loop((dt, now) => {
+    t += dt;
+    let alert = false;
+
+    if (st === 'rest') {
+      // 제자리 돌기(필요할 때만) + 숨쉬기
+      let om = 0;
+      if (turnTo != null) {
+        const d = angDiff(b.heading / RAD, turnTo / RAD) * RAD;
+        if (Math.abs(d) > 6) { om = clamp(d * 2.2, -85, 85); b.heading += om * dt; } else turnTo = null;
+      }
+      g.stanceLift = -16;
+      g.step(dt, 0, om);
+      b.pump = 0.25 * Math.sin(now * 2.4);
+      b.alt = 4 + b.bob;
+      b.pitch = lerp(b.pitch, 0, dt * 6);
+      if (t > D.rest && turnTo == null && !b.legs.some((L) => L.swing)) { go('crouch'); }
+    } else if (st === 'crouch') {           // 1) 웅크림: 몸 낮추고 머리 살짝 숙임, 더듬이 곧추
+      alert = true;
+      const k = ease(t / 0.3);
+      b.alt = lerp(4, 2.4, k); b.pitch = 4 * k; b.headYaw = lerp(b.headYaw, 0, dt * 8);
+      g.stanceLift = lerp(-16, -6, k); g.step(dt, 0, 0);
+      if (t > 0.3) go('push');
+    } else if (st === 'push') {             // 2) 밀기: 다리를 뻗어 몸을 띄우고 머리를 듦, 딱지날개 틈
+      alert = true;
+      const k = easeOut(t / 0.18);
+      b.alt = lerp(2.4, 8, k); b.pitch = lerp(4, -14, k);
+      g.stanceLift = lerp(-6, -34, k); g.step(dt, 0, 0);
+      b.open[0] = b.open[1] = 0.06 * smooth(0.5, 1, t / 0.18);
+      if (t > 0.18) go('pop');
+    } else if (st === 'pop') {              // 3) 딱지날개 "탁": 오버슈트하며 열림, 오른쪽이 살짝 늦게
+      alert = true;
+      b.open[0] = lerp(0.06, 1, easeOutBack(t / 0.16, 2.6));
+      b.open[1] = lerp(0.06, 1, easeOutBack((t - 0.035) / 0.16, 2.6));
+      const j = Math.max(0, 1 - t / 0.24);
+      b.roll = 3.2 * Math.sin(t * 70) * j;
+      b.alt = 8 + 1.4 * Math.sin(Math.PI * clamp(t / 0.12, 0, 1));
+      g.step(dt, 0, 0);
+      if (t > 0.24) { go('unfold'); wing.rate = 0; }
+    } else if (st === 'unfold') {           // 4) 뒷날개: 반쯤 → 잠깐 걸림 → 끝까지 (주름 펴지듯 두 단계)
+      alert = true;
+      for (let i = 0; i < 2; i++) {
+        const tt = t - (i ? rand(0.06, 0.08) : 0);
+        b.wingU[i] = 0.55 * easeOut(tt / 0.14) + 0.45 * ease((tt - 0.2) / 0.24);
+      }
+      b.pump = Math.sin(t * 26) * 0.6 * (1 - t / 0.55);
+      wing.rate = lerp(wing.rate, t > 0.3 ? 9 : 0, dt * 6); wing.amp = 0.6;
+      flapStep(dt);
+      b.roll = lerp(b.roll, 0, dt * 10);
+      g.step(dt, 0, 0);
+      if (t > 0.55) { go('buzz'); D.buzz = rand(0.5, 0.9); D.hop = Math.random() < 0.65 ? rand(0.2, 0.4) : -1; }
+    } else if (st === 'buzz') {             // 5) 붕붕: 날갯짓이 급히 빨라지고 몸이 떨림. 가끔 한 번 헛뜀
+      alert = true;
+      wing.rate = lerp(wing.rate, 24, dt * 5); wing.amp = lerp(wing.amp, 1, dt * 5);
+      flapStep(dt);
+      b.buzz = lerp(b.buzz, clamp((wing.rate - 10) / 12, 0, 1), dt * 8);
+      const hop = D.hop > 0 ? Math.max(0, Math.sin(Math.PI * clamp((t - D.hop) / 0.28, 0, 1))) * 7 : 0;
+      b.alt = 8 + hop + Math.sin(now * 90) * 0.35;
+      b.roll = Math.sin(now * 73) * 1.1 + wob[2](now) * 1.5;
+      b.pitch = lerp(b.pitch, -18, dt * 3);
+      g.stanceLift = lerp(g.stanceLift, -24 + hop * 3, dt * 6); g.step(dt, 0, 0);
+      if (t > D.buzz) {
+        F = planFlight();
+        if (F) { go('fly'); altS.x = b.alt; altS.v = 4; }
+        else { D.buzz += 0.3; }
+      }
+    } else if (st === 'fly') {              // 6) 비행
+      alert = true;
+      const u = clamp(t / F.T, 0, 1);
+      const ue = u * u * (3 - 2 * u);
+      const tgt = bez(F.P, ue);
+      // 경로에 수직인 방향으로 느린 흔들림 → 비틀비틀
+      const hR = b.heading / RAD;
+      const wobAmt = 9 * b.scale * smooth(0, 0.2, u) * (1 - smooth(0.8, 1, u));
+      tgt.x += Math.cos(hR) * wob[0](now) * wobAmt; tgt.y += Math.sin(hR) * wob[0](now) * wobAmt;
+      // 무거운 몸: 목표를 스프링으로 늦게 따라감
+      const ax = (tgt.x - b.x) * 26 - F.vx * 6.5, ay = (tgt.y - b.y) * 26 - F.vy * 6.5;
+      F.vx += ax * dt; F.vy += ay * dt;
+      b.x += F.vx * dt; b.y += F.vy * dt;
+      // 높이: 천천히 오르다(초반엔 살짝 처짐) 내려옴
+      altS.target = 4 + F.amax * smooth(0.02, 0.4, u) * (1 - smooth(0.66, 1, u)) + wob[1](now) * 4 * (1 - smooth(0.8, 1, u));
+      altS.k = 16; altS.c = 5.5;
+      b.alt = Math.max(3.6, altS.step(dt));
+      // 방향: 속도 방향을 따라감
+      const sp = Math.hypot(F.vx, F.vy);
+      if (sp > 8) b.heading += angDiff(b.heading / RAD, Math.atan2(F.vx, -F.vy)) * RAD * Math.min(1, dt * 5);
+      const omega = angDiff(F.lastH / RAD, b.heading / RAD) * RAD / Math.max(dt, 1e-3);
+      F.lastH = b.heading;
+      // 진자: 옆 가속을 받으면 몸이 매달린 추처럼 흔들림
+      const latA = (ax * Math.cos(hR) + ay * Math.sin(hR)) / b.scale;
+      const fwdA = (ax * Math.sin(hR) - ay * Math.cos(hR)) / b.scale;
+      const w = TAU * 1.5;
+      F.swV += (-w * w * F.sw - 2 * 0.22 * w * F.swV - latA * 4) * dt; F.sw += F.swV * dt;
+      F.pwV += (-w * w * F.pw - 2 * 0.3 * w * F.pwV + fwdA * 2.5) * dt; F.pw += F.pwV * dt;
+      F.bank = lerp(F.bank, clamp(omega * 0.2, -30, 30), Math.min(1, dt * 4));   // 도는 쪽으로 기울기
+      b.roll = clamp(F.bank + clamp(F.sw, -16, 16) + wob[2](now) * 1.5, -40, 40);
+      const steep = smooth(0, 0.18, u) * (1 - smooth(0.72, 0.97, u));
+      b.pitch = lerp(-18, -40, steep) + clamp(F.pw, -12, 12) + wob[1](now * 1.3) * 3;
+      // 날개·딱지날개 떨림
+      wing.rate = lerp(wing.rate, 25 + wob[0](now) * 3, dt * 4);
+      flapStep(dt);
+      b.buzz = lerp(b.buzz, 1, dt * 6);
+      b.open[0] = 1 + 0.035 * Math.sin(wing.phase * TAU);
+      b.open[1] = 1 + 0.035 * Math.sin(wing.phase * TAU + 0.6);
+      legsDangle(dt, smooth(0.78, 1, u), F.sw);
+      b.headYaw = lerp(b.headYaw, clamp(omega * 0.05, -6, 6), dt * 5);
+      if (u >= 1 || (u > 0.85 && b.alt < 6.5)) {
+        go('land');
+        altS.k = 340; altS.c = 9; altS.target = 4; altS.x = b.alt; altS.v = Math.min(-55, altS.v);
+        pitchS.x = b.pitch; pitchS.v = 140; pitchS.target = 0;
+        rollS.x = b.roll; rollS.v = 0; rollS.target = 0;
+        b.legs.forEach((L) => { L.foot = { x: L.rest.x * 1.18, y: L.rest.y * 1.08 }; });
+      }
+    } else if (st === 'land') {             // 7) 착지: 통통 튀고, 앞으로 쏠렸다 돌아옴, 다리 넓게 → 모음
+      F.vx *= Math.exp(-dt * 12); F.vy *= Math.exp(-dt * 12);
+      b.x += F.vx * dt; b.y += F.vy * dt;
+      b.alt = Math.max(2.2, altS.step(dt));
+      b.pitch = pitchS.step(dt);
+      b.roll = rollS.step(dt);
+      const k = ease(t / 0.6);
+      b.legs.forEach((L) => {
+        const fx = L.rest.x * lerp(1.18, 1, k), fy = L.rest.y * lerp(1.08, 1, k);
+        L.foot.x = fx; L.foot.y = fy;
+        const r = b.ik(L, fx, fy);
+        L.fem = lerp(L.fem, r.fem, Math.min(1, dt * 22));
+        L.tib = lerp(L.tib, r.tib, Math.min(1, dt * 22));
+        L.lift = lerp(L.lift, -16 - (4 - b.alt) * 4, Math.min(1, dt * 18));
+      });
+      wing.rate = lerp(wing.rate, t < 0.12 ? 22 : 0, dt * 7);
+      wing.amp = lerp(wing.amp, t < 0.12 ? 1 : 0.3, dt * 5);
+      flapStep(dt, 40, -10);
+      b.buzz = lerp(b.buzz, 0, dt * 9);
+      if (t > 0.75) { b.legs.forEach((L) => { L.ik = true; }); g.plantHere(); go('fold'); }
+    } else if (st === 'fold') {             // 8) 날개 접기: 두 번에 나눠 접고, 배를 꿀렁여 밀어 넣음
+      for (let i = 0; i < 2; i++) {
+        const tt = t - (i ? 0.12 : 0);
+        b.wingU[i] = 1 - 0.5 * ease(tt / 0.28) - 0.5 * ease((tt - 0.42) / 0.32);
+        b.wingElev[i] = lerp(b.wingElev[i], 6, dt * 6); b.wingSweep[i] = lerp(b.wingSweep[i], 0, dt * 6);
+      }
+      b.pump = Math.sin(clamp((t - 0.15) / 0.8, 0, 1) * Math.PI * 5) * 0.9;
+      b.roll = Math.sin(t * 22) * 0.8 * (1 - t / 1.05);
+      b.open[0] = lerp(1, 0.86, ease(t / 0.9)); b.open[1] = lerp(1, 0.88, ease(t / 0.9));
+      b.alt = lerp(b.alt, 4, dt * 8);
+      g.stanceLift = -16; g.step(dt, 0, 0);
+      if (t > 1.05) go('close');
+    } else if (st === 'close') {            // 9) 딱지날개 닫기: 가속하며 닫히고 "착" 하고 살짝 들썩
+      const L0 = easeIn(t / 0.2), R0 = easeIn((t - 0.045) / 0.2);
+      b.open[0] = 0.86 * (1 - L0); b.open[1] = 0.88 * (1 - R0);
+      const click = Math.max(0, Math.sin(Math.PI * clamp((t - 0.24) / 0.14, 0, 1)));
+      b.alt = 4 - click * 0.7; b.roll = click * 1.2 * Math.sin(t * 60);
+      b.pump = 0;
+      g.step(dt, 0, 0);
+      if (t > 0.42) { b.open = [0, 0]; b.wingU = [0, 0]; b.roll = 0; start(); }
+    }
+
+    antennae(dt, alert);
+    b.render();
+  });
+</script>
+</body>
+</html>

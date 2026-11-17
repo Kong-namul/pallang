@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>나비 06 · 커서 따라다니기</title>
+<!-- 커서 정확히 위가 아니라, 커서 주변을 도는 점을 쫓아감 → 강아지처럼 졸졸 -->
+<link rel="stylesheet" href="../../assets/butterfly.css">
+</head>
+<body>
+<div class="stage" id="stage"></div>
+<p class="hint">마우스를 <b>움직여 보세요</b> · 밖으로 나가면 혼자 배회</p>
+
+<script src="../../assets/butterfly.js"></script>
+<script>
+  const { Butterfly, Flyer, loop } = BF;
+  const stage = document.getElementById('stage');
+  let W = stage.clientWidth, H = stage.clientHeight;
+  addEventListener('resize', () => { W = stage.clientWidth; H = stage.clientHeight; });
+
+  const b = new Butterfly(stage, { x: W * 0.5, y: H * 0.5, scale: Math.min(0.95, W / 520) });
+  const f = new Flyer(b, { speed: 70, maxSpeed: 320, arrive: 50, margin: 40 });
+
+  let pointer = null, orbit = 0;
+  addEventListener('pointermove', (e) => { pointer = { x: e.clientX, y: e.clientY }; });
+  document.documentElement.addEventListener('pointerleave', () => { pointer = null; });
+
+  loop((dt) => {
+    orbit += dt * 1.4;
+    f.target = pointer
+      ? { x: pointer.x + Math.cos(orbit) * 46, y: pointer.y + Math.sin(orbit * 1.3) * 34 }
+      : null;
+    f.step(dt, W, H); b.update(dt); b.render();
+  });
+</script>
+</body>
+</html>

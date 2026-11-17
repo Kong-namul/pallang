@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>나비 08 · 나비 떼</title>
+<!-- 색·크기·높이·박자가 다른 나비 여러 마리. 포인터를 가까이 대면 흩어짐
+     분위기 참고: klevron/threejs-toys 의 butterflies 배경 -->
+<link rel="stylesheet" href="../../assets/butterfly.css">
+</head>
+<body>
+<div class="stage" id="stage"></div>
+<p class="hint">나비 가까이 <b>마우스를 대면</b> 흩어져요</p>
+
+<script src="../../assets/butterfly.js"></script>
+<script>
+  const { Butterfly, Flyer, loop, rand } = BF;
+  const stage = document.getElementById('stage');
+  let W = stage.clientWidth, H = stage.clientHeight;
+  addEventListener('resize', () => { W = stage.clientWidth; H = stage.clientHeight; });
+
+  const hues = [0, 18, -24, 150, 185, 205, 260, 300, 330];
+  const k = Math.min(1, W / 700);
+  const flock = hues.map((hue) => {
+    const b = new Butterfly(stage, {
+      x: rand(60, W - 60), y: rand(60, H - 60), heading: rand(0, 360),
+      hue, scale: rand(0.45, 0.85) * k, alt: rand(20, 70),
+    });
+    const f = new Flyer(b, { speed: rand(45, 75), margin: 50, altBase: rand(25, 60) });
+    return { b, f };
+  });
+
+  let flee = null;
+  addEventListener('pointermove', (e) => { flee = { x: e.clientX, y: e.clientY, r: 150 }; });
+  document.documentElement.addEventListener('pointerleave', () => { flee = null; });
+
+  loop((dt) => {
+    // 높이 순으로 그리기 (높은 나비가 위에)
+    flock.sort((a, c) => a.b.alt - c.b.alt).forEach(({ b, f }, i) => {
+      f.flee = flee;
+      f.step(dt, W, H); b.update(dt); b.render();
+      b.el.style.zIndex = i;
+    });
+  });
+</script>
+</body>
+</html>

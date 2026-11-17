@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  꿀벌 01 · 꽃 사이 윙윙
+  상태 기계(비행 → 호버 → 착지 → 이륙)로 꽃을 하나씩 들름. 비행은 "가속도 제한 + 옆으로 휘는 성분"이라
+  자연스럽게 곡선으로 다가가고, 호버는 스프링으로 꽃 주위 지점을 쫓아 옆걸음(side-slip) + 고주파 떨림.
+  호버할 땐 진행 방향이 아니라 꽃을 바라보고, 앉으면 꽃이 눌렸다가 떠날 때 튕겨 오름(2차 동작).
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>꿀벌 01 · 꽃 사이 윙윙</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  .flower { position: absolute; left: 0; top: 0; will-change: transform; }
+  .flower svg { display: block; width: 100%; height: 100%; overflow: visible;
+                filter: drop-shadow(1px 3px 2px var(--shade)); }
+</style>
+</head>
+<body>
+<div class="stage" id="stage"></div>
+<p class="hint"><b>휘어 다가가</b> 꽃을 보며 옆걸음 호버 → 잠깐 앉음 → <b>휙</b> 다음 꽃</p>
+
+<script src="../../assets/bee.js"></script>
+<script>
+  const { makeBee, loop, clamp, lerp, rand, damp, angDiff, RAD } = BE;
+  const stage = document.getElementById('stage');
+  let W = 0, H = 0, U = 0;
+
+  // ---------------- 꽃 ----------------
+  const PALETTE = [
+    { petal: '#f4a6c1', edge: '#e581a6', inner: '#fbd5e3', center: '#f2b630', dot: '#c9861a', n: 6 },
+    { petal: '#fbfbf6', edge: '#dedbd0', inner: '#fff6d8', center: '#f3b51e', dot: '#c98a12', n: 8 },
+    { petal: '#b9a0f0', edge: '#9579d9', inner: '#ddd0fa', center: '#f6d04a', dot: '#c79a22', n: 5 },
+    { petal: '#f7d24a', edge: '#e0b02a', inner: '#fbe79a', center: '#7a4a1e', dot: '#4f2e12', n: 9 },
+    { petal: '#f39a6b', edge: '#dd774a', inner: '#fbc9a8', center: '#f5c542', dot: '#c98f1c', n: 6 },
+    { petal: '#9fd0f2', edge: '#74b1dc', inner: '#d4ebfb', center: '#f2c94c', dot: '#c4961f', n: 5 },
+  ];
+
+  function flowerSVG(c) {
+    let s = '<svg viewBox="-50 -50 100 100" aria-hidden="true">';
+    // 잎 두 장
+    const la = rand(0, 360);
+    s += `<g fill="#5d9b5a" stroke="#4a8247" stroke-width="1">` +
+      `<path d="M0 0C14 -10 36 -8 50 0C36 8 14 10 0 0Z" transform="rotate(${la.toFixed(0)}) translate(18 0)"/>` +
+      `<path d="M0 0C12 -8 30 -7 42 0C30 7 12 8 0 0Z" transform="rotate(${(la + rand(110, 170)).toFixed(0)}) translate(18 0)"/></g>`;
+    const off = rand(0, 360);
+    let petals = '', inner = '';
+    for (let i = 0; i < c.n; i++) {
+      const a = off + (360 / c.n) * i + rand(-5, 5);
+      const len = rand(0.92, 1.05);
+      petals += `<ellipse cx="0" cy="${(-24 * len).toFixed(1)}" rx="${(64 / c.n + 4).toFixed(1)}" ry="${(22 * len).toFixed(1)}" transform="rotate(${a.toFixed(1)})"/>`;
+      inner += `<ellipse cx="0" cy="-15" rx="${(40 / c.n + 2).toFixed(1)}" ry="11" transform="rotate(${(a + 180 / c.n).toFixed(1)})"/>`;
+    }
+    s += `<g fill="${c.petal}" stroke="${c.edge}" stroke-width="1">${petals}</g>`;
+    s += `<g fill="${c.inner}" opacity="0.85">${inner}</g>`;
+    s += `<circle r="12.5" fill="${c.center}"/>`;
+    let dots = '';
+    for (let i = 0; i < 16; i++) {
+      const r = Math.sqrt(Math.random()) * 9.5, a = Math.random() * 6.283;
+      dots += `<circle cx="${(Math.cos(a) * r).toFixed(1)}" cy="${(Math.sin(a) * r).toFixed(1)}" r="${rand(0.8, 1.5).toFixed(1)}"/>`;
+    }
+    s += `<g fill="${c.dot}" opacity="0.8">${dots}</g></svg>`;
+    return s;
+  }
+
+  const flowers = [];
+  function placeFlowers(n) {
+    // 서로 겹치지 않게 무작위 배치 (0~1 비율로 기억 → 리사이즈해도 유지)
+    const pts = [];
+    for (let tries = 0; pts.length < n && tries < 400; tries++) {
+      const p = { fx: rand(0.12, 0.88), fy: rand(0.14, 0.8) };
+      if (pts.every((q) => Math.hypot((p.fx - q.fx) * 1.3, p.fy - q.fy) > 0.27)) pts.push(p);
+    }
+    const pal = PALETTE.slice().sort(() => Math.random() - 0.5);
+    pts.forEach((p, i) => {
+      const el = document.createElement('div');
+      el.className = 'flower';
+      el.innerHTML = flowerSVG(pal[i % pal.length]);
+      stage.appendChild(el);
+      flowers.push({ el, fx: p.fx, fy: p.fy, x: 0, y: 0, R: 0, size: rand(0.85, 1.15),
+                     rot: rand(0, 360), sway: rand(0, 6.28), press: 0, pv: 0, load: 0, visits: 0 });
+    });
+  }
+
+  function layout() {
+    W = stage.clientWidth; H = stage.clientHeight; U = Math.min(W, H);
+    const R = clamp(U * 0.085, 20, 52);
+    flowers.forEach((f) => {
+      f.R = R * f.size;
+      f.x = f.fx * W; f.y = f.fy * H;
+      const px = f.R * 2.15;
+      f.el.style.width = px + 'px'; f.el.style.height = px + 'px';
+    });
+  }
+
+  placeFlowers(Math.min(W || innerWidth, H || innerHeight) < 360 ? 4 : 5);
+  addEventListener('resize', () => { layout(); bee.scale = beeScale(); });
+  layout();
+
+  // ---------------- 벌 ----------------
+  const beeScale = () => clamp(U / 420, 0.62, 1.35);
+  const bee = makeBee(stage, { x: W * 0.5, y: H + 30, heading: 0, alt: 50, scale: beeScale() });
+
+  const S = {
+    mode: 'fly', t: 0, dur: 0,
+    vx: 0, vy: -60,
+    target: flowers[0], from: null,
+    curve: 0.8, d0: 300, burst: 0.6,
+    ha: 0, haGoal: 0, slipT: 0,        // 호버: 꽃 둘레 각도
+    spotX: 0, spotY: 0, spotT: 0,      // 착지: 꽃 위 작은 걸음
+    hd: 0,                              // heading(rad, 0 = 오른쪽)
+    flick: 0, flickT: rand(0.6, 1.4),
+    last: null,
+  };
+  S.hd = -Math.PI / 2;
+
+  function pickNext() {
+    const cur = S.target;
+    const cands = flowers.filter((f) => f !== cur && f !== S.last);
+    const pool = cands.length ? cands : flowers.filter((f) => f !== cur);
+    // 가까운 꽃을 조금 더 선호 (하지만 항상은 아님)
+    const w = pool.map((f) => 1 / (40 + Math.hypot(f.x - bee.x, f.y - bee.y)) + 0.002 / (1 + f.visits));
+    let r = Math.random() * w.reduce((a, b) => a + b, 0);
+    for (let i = 0; i < pool.length; i++) { r -= w[i]; if (r <= 0) return pool[i]; }
+    return pool[0];
+  }
+
+  function setMode(m) { S.mode = m; S.t = 0; }
+
+  function startFlight(next) {
+    S.last = S.target;
+    S.target = next;
+    S.d0 = Math.max(60, Math.hypot(next.x - bee.x, next.y - bee.y));
+    S.curve = (Math.random() < 0.5 ? -1 : 1) * rand(0.35, 1.0);
+    S.burst = 0.9;
+    setMode('fly');
+  }
+
+  function cruise() { return clamp(U * 0.95, 200, 480); }
+
+  loop((dt, now) => {
+    if (dt === 0) return;
+    S.t += dt;
+    const F = S.target;
+    const sc = bee.scale;
+    let faceAngle = null;     // null이면 속도 방향을 바라봄
+    let altGoal = 46 * sc, flyGoal = 1, altRate = 3;
+    let jitter = 0;
+
+    if (S.mode === 'fly') {
+      const dx = F.x - bee.x, dy = F.y - bee.y, d = Math.hypot(dx, dy) || 1;
+      const ux = dx / d, uy = dy / d;
+      // 멀리선 옆으로 휘어 들어오고, 가까워질수록 곧장
+      const far = clamp((d - F.R * 1.2) / S.d0, 0, 1);
+      const lat = S.curve * far * far * 1.1;
+      let dvx = ux - uy * lat, dvy = uy + ux * lat;
+      const dl = Math.hypot(dvx, dvy);
+      const sp = cruise() * clamp(d / (F.R * 3.2), 0.28, 1) * (1 + S.burst);
+      dvx = dvx / dl * sp; dvy = dvy / dl * sp;
+      const agility = 4.2 + (1 - far) * 4;
+      S.vx = damp(S.vx, dvx, agility, dt); S.vy = damp(S.vy, dvy, agility, dt);
+      S.burst = Math.max(0, S.burst - dt * 1.5);
+      altGoal = (40 + 12 * Math.sin(now * 2.3)) * sc * (0.55 + 0.45 * far);
+      jitter = 0.5;
+      if (d < F.R * 1.05) {
+        S.ha = Math.atan2(bee.y - F.y, bee.x - F.x);
+        S.haGoal = S.ha; S.slipT = rand(0.15, 0.35);
+        S.dur = rand(0.7, 1.5);
+        setMode('hover');
+      }
+    } else if (S.mode === 'hover') {
+      // 꽃 둘레의 한 점을 스프링으로 쫓음. 그 점이 툭툭 옆으로 바뀜 → 옆걸음
+      S.slipT -= dt;
+      if (S.slipT <= 0) {
+        S.slipT = rand(0.18, 0.45);
+        S.haGoal += (Math.random() < 0.5 ? -1 : 1) * rand(0.25, 0.8);
+      }
+      S.ha = damp(S.ha, S.haGoal, 7, dt);
+      const r = F.R * (0.82 + 0.1 * Math.sin(now * 3.1));
+      const tx = F.x + Math.cos(S.ha) * r, ty = F.y + Math.sin(S.ha) * r;
+      S.vx += ((tx - bee.x) * 70 - S.vx * 11) * dt;
+      S.vy += ((ty - bee.y) * 70 - S.vy * 11) * dt;
+      faceAngle = Math.atan2(F.y - bee.y, F.x - bee.x);
+      altGoal = 20 * sc; altRate = 4;
+      jitter = 1.6;
+      if (S.t > S.dur) {
+        S.spotX = F.x + rand(-0.12, 0.12) * F.R; S.spotY = F.y + rand(-0.12, 0.12) * F.R;
+        S.spotT = rand(0.4, 0.8);
+        S.dur = rand(1.4, 2.6);
+        setMode('land');
+      }
+    } else if (S.mode === 'land') {
+      // 내려앉기: 처음엔 날개 계속 윙윙, 닿으면 접음. 꽃 위에서 종종걸음
+      const touching = bee.alt < 5 * sc;
+      S.spotT -= dt;
+      if (touching && S.spotT <= 0) {
+        S.spotT = rand(0.45, 0.9);
+        const a = rand(0, 6.283), rr = rand(0.05, 0.28) * F.R;
+        S.spotX = F.x + Math.cos(a) * rr; S.spotY = F.y + Math.sin(a) * rr;
+      }
+      const k = touching ? 14 : 30, c = touching ? 8 : 10;
+      S.vx += ((S.spotX - bee.x) * k - S.vx * c) * dt;
+      S.vy += ((S.spotY - bee.y) * k - S.vy * c) * dt;
+      altGoal = 0; altRate = 5;
+      flyGoal = touching ? 0 : 0.55;
+      if (touching) {
+        F.load = 1;
+        bee.pollen = Math.min(1, bee.pollen + dt * 0.1);
+        // 걷는 쪽을 보되, 가만히 있을 땐 천천히 몸을 돌림
+        const v = Math.hypot(S.vx, S.vy);
+        faceAngle = v > 6 ? Math.atan2(S.vy, S.vx) : S.hd + Math.sin(now * 0.9) * 0.4 * dt;
+        // 가끔 날개를 살짝 떪
+        S.flickT -= dt;
+        if (S.flickT <= 0) { S.flick = 0.18; S.flickT = rand(0.5, 1.3); }
+        if (S.flick > 0) { S.flick -= dt; flyGoal = 0.35; }
+      } else {
+        faceAngle = S.hd;
+        jitter = 0.8;
+      }
+      if (S.t > S.dur && touching) { setMode('takeoff'); }
+    } else if (S.mode === 'takeoff') {
+      // 예비 동작: 날개 먼저 돌리고, 몸이 살짝 떴다가 → 휙
+      flyGoal = 1;
+      altGoal = 14 * sc; altRate = 9;
+      S.vx = damp(S.vx, 0, 10, dt); S.vy = damp(S.vy, 0, 10, dt);
+      faceAngle = S.hd;
+      jitter = 1.2;
+      if (S.t > 0.12) F.load = 0;
+      if (S.t > 0.26) {
+        const nx = pickNext();
+        const ax = nx.x - bee.x, ay = nx.y - bee.y, al = Math.hypot(ax, ay) || 1;
+        startFlight(nx);
+        // 튀어나가는 첫 속도: 목표 방향에서 휘는 쪽으로 비틀어서
+        const kick = cruise() * 0.9, tw = Math.atan(S.curve * 1.1);
+        const cx = Math.cos(tw), sx = Math.sin(tw);
+        S.vx = (ax / al * cx - ay / al * sx) * kick;
+        S.vy = (ax / al * sx + ay / al * cx) * kick;
+        F.visits++;
+      }
+    }
+
+    // ---- 이동 ----
+    bee.x += S.vx * dt; bee.y += S.vy * dt;
+    const speed = Math.hypot(S.vx, S.vy);
+
+    // ---- 방향: 날 땐 속도 방향, 호버·착지 땐 정해진 쪽 ----
+    let want = faceAngle;
+    if (want == null) want = speed > 5 ? Math.atan2(S.vy, S.vx) : S.hd;
+    const turnK = S.mode === 'fly' ? 9 : S.mode === 'land' ? 4 : 7;
+    const dh = angDiff(S.hd, want) * (1 - Math.exp(-turnK * dt));
+    S.hd += dh;
+    // 기울기: 옆으로 미끄러지는 속도 + 회전 속도
+    const rx = -Math.sin(S.hd), ry = Math.cos(S.hd);      // 오른쪽 방향
+    const vlat = S.vx * rx + S.vy * ry;
+    const bankGoal = bee.alt > 4 ? clamp(vlat / (cruise() * 0.35) + (dh / dt) * 0.12, -1, 1) : 0;
+    bee.bank = damp(bee.bank, bankGoal, 8, dt);
+
+    bee.alt = damp(bee.alt, altGoal, altRate, dt);
+    bee.fly = damp(bee.fly, flyGoal, flyGoal > bee.fly ? 14 : 6, dt);
+    bee.wingHz = 22 + 8 * bee.fly;
+    bee.pollen = Math.max(0, bee.pollen - dt * 0.012);
+    bee.antenna = S.mode === 'hover' || S.mode === 'land' ? 10 : 0;
+
+    // 윙윙 떨림: 여러 고주파 사인을 섞어 불규칙하게 (렌더 위치에만)
+    const jx = jitter * sc * (Math.sin(now * 37.1) + 0.6 * Math.sin(now * 53.7 + 1.3) + 0.4 * Math.sin(now * 23.3 + 2));
+    const jy = jitter * sc * (Math.sin(now * 41.9 + 0.7) + 0.6 * Math.sin(now * 29.3 + 2.4) + 0.4 * Math.sin(now * 61.1));
+    const bx = bee.x, by = bee.y;
+    bee.x += jx; bee.y += jy;
+    bee.heading = S.hd * RAD + 90 + jitter * 1.5 * Math.sin(now * 33.7);
+    bee.update(dt);
+    bee.render();
+    bee.x = bx; bee.y = by; bee.px = bx; bee.py = by;
+    // 걸음은 떨림 없이 실제 이동으로 (update 안에서 쓴 px를 실제 위치로 맞춤)
+
+    // ---- 꽃: 산들바람 + 앉으면 눌림, 떠나면 튕김 ----
+    flowers.forEach((f) => {
+      const goal = f.load * 0.09;
+      f.pv += ((goal - f.press) * 120 - f.pv * 7) * dt;
+      f.press += f.pv * dt;
+      const sway = Math.sin(now * 0.8 + f.sway) * 2.5 + Math.sin(now * 1.9 + f.sway * 2) * 0.8;
+      const s = 1 - f.press;
+      f.el.style.transform =
+        `translate(${(f.x - f.R * 1.075).toFixed(1)}px,${(f.y - f.R * 1.075).toFixed(1)}px) rotate(${(f.rot + sway + f.press * 40).toFixed(2)}deg) scale(${s.toFixed(4)})`;
+    });
+  });
+</script>
+</body>
+</html>

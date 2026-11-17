@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>풍뎅이 03 · 뒤집혀서 버둥대다 뒤집기</title>
+<!-- 뒤집힌 몸은 둥근 등껍질 위에서 흔들리는 오뚝이: 각도 φ 에 스프링(복원력) + 다리가 박자 맞춰 미는 힘.
+     시도마다 목표 진폭을 바꿔(실패도 섞음) 점점 크게 흔들다, 옆 모서리(약 78°)를 넘으면 중력처럼 가속해 휙 넘어감.
+     구르는 만큼 몸이 옆으로 밀리고(미끄러짐 없는 굴림), 높이는 타원 등껍질 기준으로 오르내림. 다리는 스프링+랜덤 목표로 파닥. -->
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  .floor { position: absolute; left: 0; top: 0; width: 0; height: 0; transform-style: preserve-3d; }
+  .floor i { position: absolute; border-radius: 50%;
+    background: radial-gradient(closest-side, color-mix(in srgb, var(--ink) 9%, transparent), color-mix(in srgb, var(--ink) 4%, transparent) 60%, transparent); }
+</style>
+</head>
+<body>
+<div class="stage" id="stage"><div class="floor" id="floor"><i id="patch"></i></div></div>
+<p class="hint">뒤집힌 풍뎅이 · <b>점점 크게</b> 흔들다 휙 뒤집기</p>
+<div class="ui"><button type="button" id="again">다시</button></div>
+
+<script src="../../assets/beetle.js"></script>
+<script>
+  const { makeBeetle, Gait, Spring, loop, makeNoise, clamp, lerp, rand, ease, easeOut, smooth, angDiff, RAD, TAU } = BT;
+  const stage = document.getElementById('stage');
+  const floor = document.getElementById('floor');
+  const patch = document.getElementById('patch');
+  const TILT = 34, COS = Math.cos(TILT / RAD);
+  let W, H, OY;
+  const b = makeBeetle(stage, { tilt: TILT });
+  function resize() {
+    W = stage.clientWidth; H = stage.clientHeight; OY = H * 0.57; b.oy = OY;
+    b.scale = clamp(Math.min(W, H / 0.85) / 300, 0.65, 1.8);
+    floor.style.transform = `translate3d(${W / 2}px,${OY}px,0) rotateX(${TILT}deg)`;
+    const r = Math.min(W, H / COS) * 0.55;
+    Object.assign(patch.style, { width: 2 * r + 'px', height: 2 * r + 'px', left: -r + 'px', top: -r + 'px' });
+  }
+  addEventListener('resize', resize); resize();
+  const g = new Gait(b, { stride: 13 });
+
+  // 등껍질을 타원으로 보고 높이 계산: 뒤집힌 쪽 반두께 8.5, 다리 쪽 4, 반폭 17
+  const support = (phi) => {
+    const c = Math.cos(phi / RAD), s = Math.sin(phi / RAD);
+    return Math.hypot((c >= 0 ? 8.5 : 4) * c, 17 * s);
+  };
+
+  /* ---------- 다리·더듬이 파닥임: 스프링 + 랜덤 목표 ---------- */
+  const BASE = [-40, 10, 45];
+  const flail = b.legs.map(() => ({ fem: new Spring(0, 520, 17), tib: new Spring(30, 520, 17), lift: new Spring(-40, 420, 16), next: 0 }));
+  const antS = [0, 1].map(() => ({ a: new Spring(-60, 300, 12), b: new Spring(-10, 300, 12), fan: new Spring(0.5, 200, 12), next: 0 }));
+  function legsFlail(dt, energy, phi) {
+    const sphi = Math.sin(phi / RAD);
+    b.legs.forEach((L, i) => {
+      const F = flail[i];
+      if ((F.next -= dt) <= 0) {
+        // 에너지가 높을수록 자주, 크게. 가끔 한 다리만 멈칫(불규칙)
+        const lazy = Math.random() < 0.15;
+        F.fem.target = BASE[i % 3] + rand(-38, 38) * energy;
+        F.tib.target = rand(-60, 70) * (lazy ? 0.3 : 1);
+        F.lift.target = rand(-75, -10);
+        F.next = (lazy ? rand(0.25, 0.5) : rand(0.05, 0.2)) / (0.4 + energy);
+      }
+      // 내려가는 쪽 다리는 바닥을 더듬으려 옆으로 뻗음 (뒤집힌 상태에서 +lift = 아래)
+      const reach = Math.max(0, -L.side * sphi) * 1.4;
+      L.ik = false;
+      L.fem = F.fem.step(dt) * (1 - reach * 0.5) + (L.i % 3 === 1 ? 5 : 0) * reach;
+      L.tib = L.fem + F.tib.step(dt) * (1 - reach * 0.6);
+      L.lift = lerp(F.lift.step(dt), 25, clamp(reach, 0, 1));
+      L.tar = L.tarRest + Math.sin(performance.now() / 70 + i) * 14 * energy;
+    });
+  }
+  function antennae(dt, rate, wide) {
+    antS.forEach((A, i) => {
+      if ((A.next -= dt) <= 0) {
+        A.a.target = -62 + rand(-wide, wide * 0.8); A.b.target = rand(-40, 10); A.fan.target = rand(0.3, 1);
+        A.next = rand(0.08, 0.3) / rate;
+      }
+      b.ant[i].a = A.a.step(dt); b.ant[i].b = A.b.step(dt); b.ant[i].fan = A.fan.step(dt);
+    });
+  }
+
+  /* ---------- 상태 ---------- */
+  let st, t, phi, phiV, altV, spin, attempts, ai, aT, exitH, speed;
+  const wN = makeNoise(0.15);
+  function reset() {
+    st = 'drop'; t = 0;
+    b.x = W / 2 + rand(-0.12, 0.12) * W; b.y = OY + rand(-20, 20);
+    b.heading = rand(0, 360); b.roll = 180; b.pitch = 0; b.shift = 0; b.alt = 150;
+    b.sway = { x: 0, y: 0, h: 0 }; b.open = [0, 0]; b.headYaw = 0;
+    phi = rand(-8, 8); phiV = 0; altV = -60; spin = rand(-140, 140);
+    // 시도 목록: 진폭(도)·시간. 중간에 약해지는 실패도 섞고, 마지막은 반드시 넘어감
+    attempts = [];
+    const n = 2 + Math.floor(Math.random() * 2);
+    for (let k = 0; k < n; k++) attempts.push({ A: lerp(14, 52, k / n) + rand(-8, 8), d: rand(1.3, 2.2) }, { A: rand(0, 6), d: rand(0.4, 0.9) });
+    attempts.push({ A: 110, d: 9, last: true });
+    ai = 0; aT = 0;
+    b.el.style.opacity = 1;
+  }
+  document.getElementById('again').addEventListener('click', reset);
+  reset();
+
+  const W0 = TAU * 1.25; // 흔들림 고유 진동수(rad/s)
+  const tipS = new Spring(180, 320, 11), hopS = new Spring(0, 260, 9);
+
+  loop((dt, now) => {
+    t += dt;
+    if (st === 'drop') {                        // 위에서 뚝 떨어져 등으로 착지, 통통 튀고 빙글 돌다 멈춤
+      altV -= 1100 * dt; b.alt += altV * dt;
+      const ground = support(phi);
+      if (b.alt <= ground) {
+        b.alt = ground;
+        if (Math.abs(altV) > 40) { altV = -altV * 0.3; phiV += rand(-90, 90); spin *= 0.6; }
+        else { altV = 0; st = 'struggle'; t = 0; }
+      }
+      spin *= Math.exp(-dt * (b.alt <= ground + 1 ? 3 : 0.2));
+      b.heading += spin * dt;
+      phiV += (-W0 * W0 * phi - 4 * phiV) * dt; phi += phiV * dt;
+      legsFlail(dt, 1, phi); antennae(dt, 1.4, 28);
+    } else if (st === 'struggle') {             // 버둥: 흔들림 박자에 맞춰 다리로 밀어 진폭을 키움
+      const at = attempts[ai];
+      aT += dt;
+      if (aT > at.d && !at.last) { ai++; aT = 0; }
+      const amp = Math.hypot(phi, phiV / W0);
+      const push = clamp((at.A - amp) * 30, -420, 950) * Math.sign(phiV || 1);
+      phiV += (-W0 * W0 * phi - 0.5 * phiV + push + rand(-60, 60)) * dt;
+      phi += phiV * dt;
+      spin *= Math.exp(-dt * 3); b.heading += spin * dt;
+      const energy = clamp(0.35 + at.A / 60, 0.3, 1);
+      legsFlail(dt, energy, phi); antennae(dt, 0.6 + energy, 20 + energy * 16);
+      // 마지막 시도에선 딱지날개를 살짝 벌려 바닥을 짚음
+      const lift = at.last ? 0.22 * smooth(0, 0.6, aT) : 0;
+      b.open[0] = lerp(b.open[0], lift, dt * 6); b.open[1] = lerp(b.open[1], lift * 0.9, dt * 6);
+      b.alt = support(phi);
+      if (Math.abs(phi) > 78) { st = 'tip'; t = 0; }
+    } else if (st === 'tip') {                  // 모서리를 넘으면 중력처럼 가속해서 휙
+      const s = Math.sign(phi);
+      phiV += s * 1500 * dt; phi += phiV * dt;
+      legsFlail(dt, 1, phi); antennae(dt, 2, 30);
+      b.open[0] = lerp(b.open[0], 0, dt * 10); b.open[1] = lerp(b.open[1], 0, dt * 10);
+      b.alt = support(phi);
+      if (Math.abs(phi) >= 180) {
+        phi = 180 * s; tipS.x = phi; tipS.v = phiV * 0.3; tipS.target = 180 * s;
+        hopS.x = 0; hopS.v = 26;
+        st = 'land'; t = 0;
+        b.legs.forEach((L) => { L.foot = { x: L.rest.x * 1.2, y: L.rest.y * 1.08 }; });
+      }
+    } else if (st === 'land') {                 // 넘어가서 살짝 더 돌았다(오버슈트) 되돌아오며 통 튀기
+      phi = tipS.step(dt);
+      b.alt = support(phi) + Math.max(0, hopS.step(dt));
+      const k = ease(t / 0.5);
+      b.legs.forEach((L) => {
+        const fx = L.rest.x * lerp(1.2, 1, k), fy = L.rest.y * lerp(1.08, 1, k);
+        L.foot.x = fx; L.foot.y = fy;
+        const r = b.ik(L, fx, fy);
+        L.fem = lerp(L.fem, r.fem, Math.min(1, dt * 16));
+        L.tib = lerp(L.tib, r.tib, Math.min(1, dt * 16));
+        L.lift = lerp(L.lift, -16, Math.min(1, dt * 12));
+        L.tar = lerp(L.tar, L.tarRest, Math.min(1, dt * 10));
+      });
+      antennae(dt, 1, 18);
+      if (t > 0.6) {
+        // 굴러간 만큼을 실제 위치로 옮기고 각도 정리
+        const h = b.heading / RAD, sh = b.shift * b.scale;
+        b.x += Math.cos(h) * sh; b.y += Math.sin(h) * sh;
+        b.shift = 0; phi = 0; b.roll = 0; b.alt = 4;
+        b.legs.forEach((L) => { L.ik = true; });
+        g.plantHere();
+        st = 'shake'; t = 0;
+      }
+    } else if (st === 'shake') {                // 부르르: 몸 좌우 떨기 + 딱지날개 들썩, 발 정리
+      const j = 1 - t / 0.7;
+      b.sway.h = 5 * Math.sin(t * TAU * 11) * j;
+      b.open[0] = b.open[1] = 0.07 * Math.abs(Math.sin(t * 38)) * smooth(0.45, 0, t);
+      g.step(dt, 0, 0);
+      antennae(dt, 1.2, 24);
+      if (t > 0.7) { b.sway.h = 0; b.open = [0, 0]; st = 'pause'; t = 0; aT = rand(0.5, 1.2); }
+    } else if (st === 'pause') {                // 정신 차리기: 더듬이 씰룩, 고개 두리번
+      g.step(dt, 0, 0);
+      antennae(dt, 1, 22);
+      b.headYaw = Math.sin(t * 5) * 6 * smooth(0, 0.3, t);
+      if (t > aT) {
+        st = 'walk'; t = 0; speed = 0;
+        // 화면 가운데에서 먼 쪽으로 나감
+        const away = Math.atan2(b.x - W / 2, -(b.y - OY)) * RAD;
+        exitH = away + rand(-50, 50);
+      }
+    } else if (st === 'walk') {                 // 뒤도 안 돌아보고 종종걸음
+      speed = lerp(speed, 62, dt * 1.6);
+      const want = exitH + wN(now) * 30;
+      const om = clamp(angDiff(b.heading / RAD, want / RAD) * RAD * 2.5, -120, 120);
+      b.heading += om * dt;
+      const h = b.heading / RAD;
+      b.x += Math.sin(h) * speed * b.scale * dt; b.y -= Math.cos(h) * speed * b.scale * dt;
+      g.step(dt, speed, om);
+      b.headYaw = lerp(b.headYaw, clamp(om * 0.1, -7, 7), dt * 6);
+      antennae(dt, 0.5, 8);
+      const sy = OY + (b.y - OY) * COS;
+      if (b.x < -80 || b.x > W + 80 || sy < -80 || sy > H + 80) { st = 'gone'; t = 0; }
+    } else if (st === 'gone') {
+      if (t > 0.7) reset();
+    }
+
+    if (st === 'drop' || st === 'struggle' || st === 'tip' || st === 'land') {
+      b.roll = 180 + phi;
+      b.shift = phi / RAD * 9;   // 굴러간 거리 = 반지름 × 각도
+    }
+    b.render();
+  });
+</script>
+</body>
+</html>

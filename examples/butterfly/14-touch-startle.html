@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>나비 14 · 손대면 놀라서 날아가기 (탑뷰)</title>
+<!-- 꽃에 앉아 쉬는 나비들. 탑뷰(tilt 0).
+     가까이 가면: 경계 — 날개를 세워 접고 파르르 떪 (거리에 비례)
+     건드리면:   깜짝 — 손 반대쪽으로 튀어 올라 빠르게 퍼덕이며 도망, 옆 나비도 조금 늦게 따라 놀람
+     잠잠해지면: 손에서 먼 빈 꽃을 골라 낮게 다가가 내려앉음 -->
+<link rel="stylesheet" href="../../assets/butterfly.css">
+<style>
+  .stage { perspective: 700px; perspective-origin: 50% 50%; touch-action: none; cursor: pointer; }
+  .flower { position: absolute; width: 0; height: 0; }
+  .flower svg { position: absolute; left: -45px; top: -45px; width: 90px; height: 90px; overflow: visible; }
+</style>
+</head>
+<body>
+<div class="stage" id="stage"></div>
+<p class="hint">가까이 가면 <b>경계</b>, 건드리면 <b>날아가요</b></p>
+
+<script src="../../assets/butterfly.js"></script>
+<script>
+  const { Butterfly, Flyer, loop, lerp, clamp, rand, ease } = BF;
+  const stage = document.getElementById('stage');
+  let W = stage.clientWidth, H = stage.clientHeight;
+  const S = Math.min(1, W / 520, H / 380);
+
+  // 꽃 (탑뷰)
+  const PETALS = ['#f3c6d6', '#f7e3a1', '#cfd8f6', '#f6cdb4', '#d9eec4'];
+  const spots = [[0.2, 0.3], [0.5, 0.22], [0.8, 0.34], [0.32, 0.72], [0.68, 0.7]];
+  const flowers = spots.map(([fx, fy], i) => {
+    const el = document.createElement('div');
+    el.className = 'flower';
+    const petals = Array.from({ length: 6 }, (_, k) => `<ellipse cx="0" cy="-22" rx="13" ry="22" transform="rotate(${k * 60 + i * 17})"/>`).join('');
+    el.innerHTML = `<svg viewBox="-45 -45 90 90"><g fill="${PETALS[i]}" stroke="rgba(0,0,0,.08)">${petals}</g><circle r="11" fill="#f2b632"/><circle r="6" fill="#e09a1c"/></svg>`;
+    stage.appendChild(el);
+    return { el, fx, fy, x: 0, y: 0, taken: null };
+  });
+  function layout() {
+    W = stage.clientWidth; H = stage.clientHeight;
+    flowers.forEach((f) => { f.x = f.fx * W; f.y = f.fy * H; f.el.style.transform = `translate(${f.x}px, ${f.y}px) scale(${S})`; });
+  }
+  addEventListener('resize', layout); layout();
+
+  // 나비 3마리, 각자 꽃 하나에 앉아서 시작
+  const flock = [0, 150, 300].map((hue, i) => {
+    const fl = flowers[i * 2 % flowers.length];
+    const b = new Butterfly(stage, { tilt: 0, shadowShift: 0.65, scale: 0.8 * S, hue, x: fl.x, y: fl.y, alt: 4, heading: rand(0, 360), rest: 1 });
+    const f = new Flyer(b, { speed: 80, margin: 50, glides: false });
+    const a = { b, f, state: 'rest', t: 0, flower: fl, flyFor: 0, from: null, delay: -1 };
+    fl.taken = a;
+    return a;
+  });
+
+  // 포인터: 위치, 속도, 눌림
+  const ptr = { x: -999, y: -999, on: false, down: false, speed: 0, px: 0, py: 0 };
+  stage.addEventListener('pointermove', (e) => { ptr.x = e.clientX; ptr.y = e.clientY; ptr.on = true; });
+  stage.addEventListener('pointerdown', (e) => { ptr.x = e.clientX; ptr.y = e.clientY; ptr.on = true; ptr.down = true; });
+  addEventListener('pointerup', (e) => { ptr.down = false; if (e.pointerType !== 'mouse') ptr.on = false; });
+  stage.addEventListener('pointerleave', () => { ptr.on = false; ptr.down = false; });
+
+  function startle(a, fromX, fromY, power) {
+    if (a.state !== 'rest') return;
+    if (a.flower) { a.flower.taken = null; a.flower = null; }
+    a.state = 'fly'; a.t = 0; a.flyFor = rand(2.5, 4.5);
+    a.f.target = null;
+    a.f.theta = Math.atan2(a.b.y - fromY, a.b.x - fromX) + rand(-0.5, 0.5);   // 손 반대쪽으로
+    a.f.v = 60; a.f.boost = power;
+    // 옆 나비도 거리만큼 늦게 놀람
+    flock.forEach((o) => {
+      const d = Math.hypot(o.b.x - a.b.x, o.b.y - a.b.y);
+      if (o !== a && o.state === 'rest' && d < 230 * S + 60 && o.delay < 0) o.delay = 0.12 + d / 900 + rand(0, 0.15);
+    });
+  }
+
+  loop((dt) => {
+    ptr.speed = lerp(ptr.speed, Math.hypot(ptr.x - ptr.px, ptr.y - ptr.py) / Math.max(dt, 1e-3), 0.3);
+    ptr.px = ptr.x; ptr.py = ptr.y;
+
+    flock.forEach((a) => {
+      const { b, f } = a;
+      a.t += dt;
+      const d = ptr.on ? Math.hypot(ptr.x - b.x, ptr.y - b.y) : 9999;
+
+      if (a.state === 'rest') {
+        b.rest = Math.min(1, b.rest + dt * 2.5);
+        b.pitch = lerp(b.pitch, 0, dt * 4); b.bank = lerp(b.bank, 0, dt * 6);
+        const alert = clamp(1 - (d - 30) / (110 * S + 40), 0, 1);       // 0 = 편안, 1 = 바짝 긴장
+        b.restSpeed = 1 + alert * 2;
+        b.update(dt);
+        // 경계: 날개를 세워 접고 파르르
+        b.angle = lerp(b.angle, 84 + Math.sin(a.t * 46) * 2.5, ease(alert));
+        b.heading += Math.sin(a.t * 0.7) * dt * 6 + Math.sin(a.t * 38) * alert * 0.6;
+        if (a.delay >= 0 && (a.delay -= dt) < 0) startle(a, ptr.x, ptr.y, 1.0);
+        else if (d < 42 * S + 14 && (ptr.down || ptr.speed > 500)) startle(a, ptr.x, ptr.y, 1.7);
+      } else if (a.state === 'fly') {
+        b.rest = Math.max(0, b.rest - dt * 8);
+        f.flee = ptr.on ? { x: ptr.x, y: ptr.y, r: 150 } : null;
+        f.altOverride = Math.min(85, 6 + a.t * 110);
+        b.pitch = lerp(b.pitch, a.t < 0.8 ? 28 : 12, dt * 4);
+        f.step(dt, W, H); b.update(dt);
+        if (a.t > a.flyFor && !(ptr.on && d < 160)) {                 // 손에서 가장 먼 빈 꽃으로
+          const free = flowers.filter((fl) => !fl.taken);
+          free.sort((p, q) => Math.hypot(q.x - ptr.x, q.y - ptr.y) - Math.hypot(p.x - ptr.x, p.y - ptr.y));
+          a.flower = ptr.on ? free[0] : free[Math.floor(rand(0, free.length))];
+          a.flower.taken = a; f.target = a.flower; f.flee = null;
+          a.state = 'approach'; a.t = 0;
+        }
+      } else if (a.state === 'approach') {
+        const dd = Math.hypot(a.flower.x - b.x, a.flower.y - b.y);
+        f.altOverride = Math.min(70, 8 + dd * 0.22);                   // 가까워질수록 낮게
+        b.pitch = lerp(b.pitch, 10, dt * 3);
+        f.step(dt, W, H); b.update(dt);
+        if (dd < 30) { a.from = { x: b.x, y: b.y, alt: b.alt }; a.state = 'land'; a.t = 0; }
+      } else if (a.state === 'land') {
+        const k = Math.min(1, a.t / 0.7), e = ease(k);
+        b.x = lerp(a.from.x, a.flower.x, e); b.y = lerp(a.from.y, a.flower.y, e);
+        b.alt = lerp(a.from.alt, 4, e);
+        b.rate = lerp(3.2, 1.3, k); b.bank = lerp(b.bank, 0, dt * 6); b.pitch = lerp(b.pitch, 18, dt * 5);
+        b.update(dt);
+        if (k >= 1) { a.state = 'rest'; a.t = 0; a.delay = -1; }
+      }
+      b.render();
+      b.el.style.zIndex = Math.round(b.alt);
+    });
+  });
+</script>
+</body>
+</html>

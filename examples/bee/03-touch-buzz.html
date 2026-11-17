@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  꿀벌 03 · 건드리면 화난 윙윙
+  평소엔 꽃 두세 송이를 오가며 꿀을 모음(착지 → 종종걸음 → 이륙). 포인터가 가까이 오면 그쪽으로 몸을 돌려 경계(더듬이 모으고 날개 반쯤 듦).
+  벌을 누르면(pointer 이벤트 → 마우스·터치 공통) 움츠렸다(예비 동작) 튀어 오르고, 누른 자리 주위를 좁고 빠르게 맴돌며
+  가끔 찌르듯 돌진 → 날갯짓·떨림이 점점 잦아들며 넓게 돌다가 꽃으로 돌아가 앉음(회복).
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>꿀벌 03 · 건드리면 화난 윙윙</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  #stage { touch-action: none; }
+  .flower { position: absolute; left: 0; top: 0; will-change: transform; }
+  .flower svg { display: block; width: 100%; height: 100%; overflow: visible;
+                filter: drop-shadow(1px 3px 2px var(--shade)); }
+  canvas.fill { pointer-events: none; }
+</style>
+</head>
+<body>
+<div class="stage" id="stage"></div>
+<canvas class="fill" id="fx"></canvas>
+<p class="hint">벌에 포인터를 <b>가까이</b> → 경계 · <b>톡</b> 누르면 화나서 맴돌다 진정</p>
+
+<script src="../../assets/bee.js"></script>
+<script>
+  const { makeBee, loop, clamp, lerp, rand, damp, angDiff, RAD, TAU } = BE;
+  const stage = document.getElementById('stage');
+  const fx = document.getElementById('fx');
+  const fctx = fx.getContext('2d');
+  let W = 0, H = 0, U = 0;
+
+  // ---------------- 꽃 ----------------
+  const PALETTE = [
+    { petal: '#f4a6c1', edge: '#e581a6', inner: '#fbd5e3', center: '#f2b630', dot: '#c9861a', n: 6 },
+    { petal: '#fbfbf6', edge: '#dedbd0', inner: '#fff6d8', center: '#f3b51e', dot: '#c98a12', n: 8 },
+    { petal: '#b9a0f0', edge: '#9579d9', inner: '#ddd0fa', center: '#f6d04a', dot: '#c79a22', n: 5 },
+  ];
+  function flowerSVG(c) {
+    const la = rand(0, 360);
+    let s = '<svg viewBox="-50 -50 100 100" aria-hidden="true">' +
+      `<g fill="#5d9b5a" stroke="#4a8247" stroke-width="1"><path d="M0 0C14 -10 36 -8 50 0C36 8 14 10 0 0Z" transform="rotate(${la.toFixed(0)}) translate(18 0)"/>` +
+      `<path d="M0 0C12 -8 30 -7 42 0C30 7 12 8 0 0Z" transform="rotate(${(la + rand(110, 170)).toFixed(0)}) translate(18 0)"/></g>`;
+    const off = rand(0, 360);
+    let petals = '', inner = '', dots = '';
+    for (let i = 0; i < c.n; i++) {
+      const a = off + (360 / c.n) * i + rand(-5, 5), len = rand(0.92, 1.05);
+      petals += `<ellipse cx="0" cy="${(-24 * len).toFixed(1)}" rx="${(64 / c.n + 4).toFixed(1)}" ry="${(22 * len).toFixed(1)}" transform="rotate(${a.toFixed(1)})"/>`;
+      inner += `<ellipse cx="0" cy="-15" rx="${(40 / c.n + 2).toFixed(1)}" ry="11" transform="rotate(${(a + 180 / c.n).toFixed(1)})"/>`;
+    }
+    for (let i = 0; i < 16; i++) {
+      const r = Math.sqrt(Math.random()) * 9.5, a = Math.random() * TAU;
+      dots += `<circle cx="${(Math.cos(a) * r).toFixed(1)}" cy="${(Math.sin(a) * r).toFixed(1)}" r="${rand(0.8, 1.5).toFixed(1)}"/>`;
+    }
+    return s + `<g fill="${c.petal}" stroke="${c.edge}" stroke-width="1">${petals}</g><g fill="${c.inner}" opacity="0.85">${inner}</g>` +
+      `<circle r="12.5" fill="${c.center}"/><g fill="${c.dot}" opacity="0.8">${dots}</g></svg>`;
+  }
+  const SPOTS = [[0.28, 0.62], [0.7, 0.36], [0.62, 0.74]];
+  const flowers = SPOTS.map(([fx_, fy], i) => {
+    const el = document.createElement('div');
+    el.className = 'flower';
+    el.innerHTML = flowerSVG(PALETTE[i]);
+    stage.appendChild(el);
+    return { el, fx: fx_ + rand(-0.04, 0.04), fy: fy + rand(-0.04, 0.04), x: 0, y: 0, R: 0, size: rand(0.9, 1.15),
+             rot: rand(0, 360), sway: rand(0, 6), press: 0, pv: 0, load: 0 };
+  });
+
+  function layout() {
+    W = stage.clientWidth; H = stage.clientHeight; U = Math.min(W, H);
+    const dpr = devicePixelRatio || 1;
+    fx.width = W * dpr; fx.height = H * dpr; fctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const R = clamp(U * 0.1, 22, 60);
+    flowers.forEach((f) => {
+      f.R = R * f.size; f.x = f.fx * W; f.y = f.fy * H;
+      f.el.style.width = f.el.style.height = f.R * 2.15 + 'px';
+    });
+  }
+  layout();
+
+  // ---------------- 벌 ----------------
+  const beeScale = () => clamp(U / 380, 0.7, 1.5);
+  const F0 = flowers[0];
+  const bee = makeBee(stage, { x: F0.x, y: F0.y, alt: 0, fly: 0, scale: beeScale() });
+  addEventListener('resize', () => { layout(); bee.scale = beeScale(); });
+  const BL = () => 30 * bee.scale;
+
+  const S = {
+    mode: 'land', t: 0, dur: rand(2, 3.5),
+    vx: 0, vy: 0, hd: -Math.PI / 2,
+    target: F0, home: F0,
+    spotX: F0.x, spotY: F0.y, spotT: 0.5,
+    flick: 0, flickT: 1,
+    curve: 0.6, d0: 200, burst: 0,
+    ha: 0, haGoal: 0, slipT: 0,
+    // 화남
+    anger: 0, orbitA: 0, orbitW: 7, orbitR: 1, flipT: 0.6, lungeT: 1, lunge: 0,
+    crouch: 0, wary: 0,
+  };
+  const ptr = { x: -1e4, y: -1e4, inside: false, last: 0 };
+  const ripples = [];
+
+  stage.addEventListener('pointermove', (e) => { ptr.x = e.clientX; ptr.y = e.clientY; ptr.inside = e.pointerType === 'mouse'; ptr.last = performance.now(); });
+  stage.addEventListener('pointerleave', () => { ptr.inside = false; });
+  stage.addEventListener('pointerdown', (e) => {
+    ptr.x = e.clientX; ptr.y = e.clientY;
+    ripples.push({ x: ptr.x, y: ptr.y, t: 0 });
+    const d = Math.hypot(bee.x - ptr.x, bee.y - ptr.y);
+    if (d < BL() * 0.75 + 10) startle();
+    else if (S.anger > 0.3) S.anger = Math.min(1.4, S.anger + 0.3);   // 화난 동안엔 근처를 눌러도 더 약오름
+  });
+
+  function setMode(m) { S.mode = m; S.t = 0; }
+  const cruise = () => clamp(U * 0.95, 200, 480);
+
+  function startle() {
+    if (S.mode === 'angry' || S.mode === 'startle') { S.anger = Math.min(1.4, S.anger + 0.4); S.lungeT = 0; return; }
+    S.target.load = 0;
+    S.anger = 1;
+    S.crouch = 1;
+    setMode('startle');
+  }
+
+  function startFlight(next) {
+    S.target = next;
+    S.d0 = Math.max(60, Math.hypot(next.x - bee.x, next.y - bee.y));
+    S.curve = (Math.random() < 0.5 ? -1 : 1) * rand(0.35, 0.9);
+    setMode('fly');
+  }
+
+  loop((dt, now) => {
+    if (dt === 0) return;
+    S.t += dt;
+    const sc = bee.scale, bl = BL();
+    const F = S.target;
+    let faceAngle = null, altGoal = 44 * sc, flyGoal = 1, altRate = 3, jitter = 0, wingHz = 28;
+    const pd = Math.hypot(ptr.x - bee.x, ptr.y - bee.y);
+    const hovering = ptr.inside && performance.now() - ptr.last < 4000;
+
+    if (S.mode === 'land') {
+      // 꽃 위에서 종종걸음 + 가끔 날개 털기. 포인터가 가까우면 경계
+      const touching = bee.alt < 5 * sc;
+      S.wary = damp(S.wary, hovering && pd < bl * 3.2 ? 1 : 0, 6, dt);
+      S.spotT -= dt;
+      if (touching && S.spotT <= 0 && S.wary < 0.5) {
+        S.spotT = rand(0.45, 0.9);
+        const a = rand(0, TAU), rr = rand(0.05, 0.3) * F.R;
+        S.spotX = F.x + Math.cos(a) * rr; S.spotY = F.y + Math.sin(a) * rr;
+      }
+      if (S.wary > 0.5) {               // 경계: 걸음을 멈추고 포인터 반대로 살짝 물러섬
+        const ax = bee.x - ptr.x, ay = bee.y - ptr.y, al = Math.hypot(ax, ay) || 1;
+        S.spotX = damp(S.spotX, F.x + (ax / al) * F.R * 0.3, 3, dt);
+        S.spotY = damp(S.spotY, F.y + (ay / al) * F.R * 0.3, 3, dt);
+      }
+      const k = touching ? 14 : 30, c = touching ? 8 : 10;
+      S.vx += ((S.spotX - bee.x) * k - S.vx * c) * dt;
+      S.vy += ((S.spotY - bee.y) * k - S.vy * c) * dt;
+      altGoal = 0; altRate = 5;
+      flyGoal = touching ? 0.22 * S.wary : 0.55;
+      if (touching) {
+        F.load = 1;
+        bee.pollen = Math.min(1, bee.pollen + dt * 0.08);
+        const v = Math.hypot(S.vx, S.vy);
+        faceAngle = S.wary > 0.15 ? Math.atan2(ptr.y - bee.y, ptr.x - bee.x) : v > 6 ? Math.atan2(S.vy, S.vx) : S.hd;
+        S.flickT -= dt;
+        if (S.flickT <= 0) { S.flick = 0.16; S.flickT = rand(0.6, 1.5); }
+        if (S.flick > 0) { S.flick -= dt; flyGoal = Math.max(flyGoal, 0.32); }
+        // 오래 경계하면 결국 다른 꽃으로 피함
+        if (S.wary > 0.9 && pd < bl * 1.4) S.dur = Math.min(S.dur, S.t + 0.6);
+        if (S.t > S.dur && (S.wary < 0.5 || pd < bl * 1.4)) setMode('takeoff');
+      } else { faceAngle = S.hd; jitter = 0.8; }
+    } else if (S.mode === 'takeoff') {
+      flyGoal = 1; altGoal = 14 * sc; altRate = 9; faceAngle = S.hd; jitter = 1.2;
+      S.vx = damp(S.vx, 0, 10, dt); S.vy = damp(S.vy, 0, 10, dt);
+      if (S.t > 0.12) F.load = 0;
+      if (S.t > 0.26) {
+        const opts = flowers.filter((f) => f !== F);
+        const nx = opts[Math.floor(Math.random() * opts.length)];
+        startFlight(nx);
+        const ax = nx.x - bee.x, ay = nx.y - bee.y, al = Math.hypot(ax, ay) || 1, tw = Math.atan(S.curve * 1.1);
+        S.vx = (ax / al * Math.cos(tw) - ay / al * Math.sin(tw)) * cruise() * 0.9;
+        S.vy = (ax / al * Math.sin(tw) + ay / al * Math.cos(tw)) * cruise() * 0.9;
+        S.burst = 0.8;
+      }
+    } else if (S.mode === 'fly' || S.mode === 'calm') {
+      // 꽃으로 휘어 들어감 (calm: 화가 덜 풀려 아직 약간 떨림)
+      const dx = F.x - bee.x, dy = F.y - bee.y, d = Math.hypot(dx, dy) || 1;
+      const far = clamp((d - F.R * 1.2) / S.d0, 0, 1), lat = S.curve * far * far * 1.1;
+      let dvx = dx / d - dy / d * lat, dvy = dy / d + dx / d * lat;
+      const dl = Math.hypot(dvx, dvy), sp = cruise() * clamp(d / (F.R * 3.2), 0.28, 1) * (1 + S.burst);
+      S.vx = damp(S.vx, dvx / dl * sp, 4.2 + (1 - far) * 4, dt);
+      S.vy = damp(S.vy, dvy / dl * sp, 4.2 + (1 - far) * 4, dt);
+      S.burst = Math.max(0, S.burst - dt * 1.5);
+      altGoal = (40 + 10 * Math.sin(now * 2.3)) * sc * (0.55 + 0.45 * far);
+      jitter = 0.5 + S.anger * 1.5;
+      if (d < F.R * 1.05) {
+        S.ha = Math.atan2(bee.y - F.y, bee.x - F.x); S.haGoal = S.ha; S.slipT = 0.2;
+        S.dur = rand(0.6, 1.1) + S.anger * 1.2;
+        setMode('hover');
+      }
+    } else if (S.mode === 'hover') {
+      S.slipT -= dt;
+      if (S.slipT <= 0) { S.slipT = rand(0.18, 0.45); S.haGoal += (Math.random() < 0.5 ? -1 : 1) * rand(0.25, 0.8); }
+      S.ha = damp(S.ha, S.haGoal, 7, dt);
+      const r = F.R * 0.82, tx = F.x + Math.cos(S.ha) * r, ty = F.y + Math.sin(S.ha) * r;
+      S.vx += ((tx - bee.x) * 70 - S.vx * 11) * dt;
+      S.vy += ((ty - bee.y) * 70 - S.vy * 11) * dt;
+      faceAngle = Math.atan2(F.y - bee.y, F.x - bee.x);
+      altGoal = 20 * sc; altRate = 4; jitter = 1.6 + S.anger;
+      if (S.t > S.dur) {
+        S.spotX = F.x + rand(-0.12, 0.12) * F.R; S.spotY = F.y + rand(-0.12, 0.12) * F.R; S.spotT = 0.6;
+        S.dur = rand(2.5, 4.5);
+        setMode('land');
+      }
+    } else if (S.mode === 'startle') {
+      // 0~0.07초: 움츠림(날개 확 펼침) → 포인터 반대쪽으로 튀어 오름
+      const ax = bee.x - ptr.x, ay = bee.y - ptr.y, al = Math.hypot(ax, ay) || 1;
+      flyGoal = 1; wingHz = 40; jitter = 2;
+      faceAngle = S.hd;
+      if (S.t < 0.07) { altGoal = 0; altRate = 30; S.vx *= 0.5; S.vy *= 0.5; }
+      else {
+        if (S.crouch > 0) {
+          S.crouch = 0;
+          S.vx = ax / al * cruise() * 1.3 + rand(-60, 60);
+          S.vy = ay / al * cruise() * 1.3 + rand(-60, 60);
+        }
+        altGoal = 70 * sc; altRate = 9;
+        S.vx = damp(S.vx, 0, 3, dt); S.vy = damp(S.vy, 0, 3, dt);
+      }
+      if (S.t > 0.32) {
+        S.orbitA = Math.atan2(bee.y - ptr.y, bee.x - ptr.x);
+        S.orbitW = (Math.random() < 0.5 ? -1 : 1) * rand(6, 8);
+        S.flipT = rand(0.4, 0.8); S.lungeT = rand(0.5, 1.0);
+        setMode('angry');
+      }
+    } else if (S.mode === 'angry') {
+      // 포인터 주위를 좁게 빠르게 맴돌기. 방향을 홱 바꾸고, 가끔 찌르듯 돌진
+      S.anger -= dt * 0.32;
+      const a = clamp(S.anger, 0, 1);
+      S.flipT -= dt;
+      if (S.flipT <= 0) { S.flipT = rand(0.35, 0.9); S.orbitW = -Math.sign(S.orbitW) * rand(5, 8.5) * (0.55 + 0.45 * a); }
+      S.lungeT -= dt;
+      if (S.lungeT <= 0) { S.lungeT = rand(0.6, 1.3) / (0.4 + a); S.lunge = 1; }
+      S.lunge = Math.max(0, S.lunge - dt * 4);
+      S.orbitA += S.orbitW * dt;
+      const R = bl * (lerp(3.2, 1.5, a) + 0.4 * Math.sin(now * 5.3)) * (1 - 0.7 * Math.sin(Math.PI * S.lunge));
+      const tx = ptr.x + Math.cos(S.orbitA) * R, ty = ptr.y + Math.sin(S.orbitA) * R;
+      const k = lerp(18, 45, a), c = lerp(6, 9, a);
+      S.vx += ((tx - bee.x) * k - S.vx * c) * dt;
+      S.vy += ((ty - bee.y) * k - S.vy * c) * dt;
+      if (S.lunge > 0.2) faceAngle = Math.atan2(ptr.y - bee.y, ptr.x - bee.x);
+      altGoal = lerp(40, 60, a) * sc;
+      wingHz = lerp(30, 42, a); jitter = lerp(0.8, 2.6, a);
+      if (S.anger <= 0.15) {
+        // 진정: 가장 가까운 꽃(포인터에서 먼 쪽 선호)으로
+        const pick = flowers.slice().sort((f1, f2) =>
+          (Math.hypot(f1.x - bee.x, f1.y - bee.y) - Math.hypot(f1.x - ptr.x, f1.y - ptr.y) * 0.6) -
+          (Math.hypot(f2.x - bee.x, f2.y - bee.y) - Math.hypot(f2.x - ptr.x, f2.y - ptr.y) * 0.6))[0];
+        startFlight(pick);
+        setMode('calm');
+      }
+    }
+    if (S.mode === 'calm' || S.mode === 'hover' || S.mode === 'land') S.anger = Math.max(0, S.anger - dt * 0.25);
+
+    // ---- 이동·자세 ----
+    bee.x += S.vx * dt; bee.y += S.vy * dt;
+    const m = 20;
+    bee.x = clamp(bee.x, m, W - m); bee.y = clamp(bee.y, m, H - m);
+    const speed = Math.hypot(S.vx, S.vy);
+    let want = faceAngle;
+    if (want == null) want = speed > 5 ? Math.atan2(S.vy, S.vx) : S.hd;
+    const turnK = S.mode === 'land' ? (S.wary > 0.15 ? 9 : 4) : S.mode === 'angry' ? 14 : 8;
+    const dh = angDiff(S.hd, want) * (1 - Math.exp(-turnK * dt));
+    S.hd += dh;
+    const rx = -Math.sin(S.hd), ry = Math.cos(S.hd);
+    const vlat = S.vx * rx + S.vy * ry;
+    bee.bank = damp(bee.bank, bee.alt > 4 ? clamp(vlat / (cruise() * 0.35) + (dh / dt) * 0.12, -1, 1) : 0, 8, dt);
+    bee.alt = damp(bee.alt, altGoal, altRate, dt);
+    bee.fly = damp(bee.fly, flyGoal, flyGoal > bee.fly ? 18 : 6, dt);
+    bee.wingHz = damp(bee.wingHz, wingHz, 6, dt);
+    bee.antenna = S.mode === 'land' ? 6 + 16 * S.wary : S.mode === 'angry' ? 14 : 0;
+    bee.bend = damp(bee.bend, S.mode === 'angry' ? Math.sin(now * 17) * 10 * clamp(S.anger, 0, 1) : 0, 12, dt);   // 화나면 배를 들썩(침 겨눔)
+    bee.pollen = Math.max(0, bee.pollen - dt * 0.01);
+    const crouchS = S.mode === 'startle' && S.t < 0.07 ? 0.9 : 1;
+
+    const jx = jitter * sc * (Math.sin(now * 37.1) + 0.6 * Math.sin(now * 53.7 + 1.3) + 0.4 * Math.sin(now * 23.3 + 2));
+    const jy = jitter * sc * (Math.sin(now * 41.9 + 0.7) + 0.6 * Math.sin(now * 29.3 + 2.4) + 0.4 * Math.sin(now * 61.1));
+    const bx = bee.x, by = bee.y, s0 = bee.scale;
+    bee.x += jx; bee.y += jy; bee.scale = s0 * crouchS;
+    bee.heading = S.hd * RAD + 90 + jitter * 1.5 * Math.sin(now * 33.7);
+    bee.update(dt); bee.render();
+    bee.x = bx; bee.y = by; bee.px = bx; bee.py = by; bee.scale = s0;
+
+    // ---- 꽃: 앉으면 눌림 → 떠나면 튕김 ----
+    flowers.forEach((f) => {
+      f.pv += ((f.load * 0.09 - f.press) * 120 - f.pv * 7) * dt;
+      f.press += f.pv * dt;
+      const sway = Math.sin(now * 0.8 + f.sway) * 2.5 + Math.sin(now * 1.9 + f.sway * 2) * 0.8;
+      f.el.style.transform = `translate(${(f.x - f.R * 1.075).toFixed(1)}px,${(f.y - f.R * 1.075).toFixed(1)}px) rotate(${(f.rot + sway + f.press * 40).toFixed(2)}deg) scale(${(1 - f.press).toFixed(4)})`;
+    });
+
+    // ---- 누른 자리 물결 + 화났을 때 윙윙 표시 ----
+    fctx.clearRect(0, 0, W, H);
+    const ink = getComputedStyle(document.body).color;
+    for (let i = ripples.length - 1; i >= 0; i--) {
+      const r = ripples[i]; r.t += dt;
+      const k = r.t / 0.45;
+      if (k >= 1) { ripples.splice(i, 1); continue; }
+      fctx.strokeStyle = ink; fctx.globalAlpha = 0.35 * (1 - k); fctx.lineWidth = 1.5;
+      fctx.beginPath(); fctx.arc(r.x, r.y, 8 + 30 * Math.sqrt(k), 0, TAU); fctx.stroke();
+    }
+    if (S.mode === 'angry' || S.mode === 'startle') {
+      const a = clamp(S.anger, 0, 1);
+      fctx.strokeStyle = ink; fctx.lineWidth = 1.2; fctx.globalAlpha = 0.35 * a;
+      for (let i = 0; i < 3; i++) {              // 몸 주위 짧은 진동선
+        const ang = now * 9 + i * 2.1, r1 = bl * 0.7, r2 = bl * (0.95 + 0.15 * Math.sin(now * 30 + i));
+        fctx.beginPath();
+        fctx.moveTo(bx + Math.cos(ang) * r1, by - bee.alt * 0.2 + Math.sin(ang) * r1);
+        fctx.lineTo(bx + Math.cos(ang) * r2, by - bee.alt * 0.2 + Math.sin(ang) * r2);
+        fctx.stroke();
+      }
+    }
+    fctx.globalAlpha = 1;
+  });
+</script>
+</body>
+</html>

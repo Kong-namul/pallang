@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  잠자리 03 · 물 위 순찰
+  자기 영역의 양 끝을 오가며 '직선으로 빠르게' 달리고, 끝점에서 급제동(머리 들기) → 잠깐 정지비행 → 홱 돌아 다시 출발.
+  가끔은 멈추지 않고 크게 기울이며 급선회. 속도 벡터가 머리 방향을 살짝 늦게 따라가서 선회할 때 미끄러지는 느낌이 남.
+  달리는 도중 가끔 고도를 확 낮춰 배 끝으로 수면을 1~3번 톡톡 찍고, 그 자리에 파문이 퍼짐(canvas).
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>잠자리 03 · 물 위 순찰</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  body {
+    background: radial-gradient(ellipse at 35% 25%,
+      color-mix(in srgb, var(--water) 70%, var(--sky-top)), var(--water) 55%,
+      color-mix(in srgb, var(--water) 84%, var(--ink) 16%));
+  }
+</style>
+</head>
+<body>
+<canvas class="fill" id="water"></canvas>
+<div class="stage" id="stage"></div>
+<p class="hint"><b>직선 질주·급선회·정지비행</b>, 가끔 수면을 톡</p>
+
+<script src="../../assets/dragonfly.js"></script>
+<script>
+  const { makeDragonfly, loop, clamp, lerp, rand, wobble, angDiffDeg, easeOutBack, ease, easeOutQuart, RAD } = DF;
+  const stage = document.getElementById('stage');
+  const cv = document.getElementById('water');
+  const ctx = cv.getContext('2d');
+  let W = 0, H = 0, K = 0, S = 0;
+
+  const d = makeDragonfly(stage, { hue: 150, rate: 30, phaseOffset: 160, amp: 28, alt: 44 });
+
+  /* ---------- 물 표면 소품 ---------- */
+  let col = {}, dark = false;
+  function readColors() {
+    const s = getComputedStyle(document.documentElement);
+    col = { leaf: s.getPropertyValue('--leaf').trim(), ink: s.getPropertyValue('--ink').trim() };
+    dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  }
+  readColors();
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', readColors);
+
+  let pads = [], glints = [], clumps = [];
+  function buildScene() {
+    // 연잎 (상대 좌표) · 물결 반짝임 · 모서리 풀 덤불
+    pads = [[0.12, 0.78, 0.075, 0.6], [0.2, 0.9, 0.05, 2.4], [0.86, 0.2, 0.06, 4.1], [0.78, 0.86, 0.045, 1.2]]
+      .map(([x, y, r, a]) => ({ x: x * W, y: y * H, r: r * S, a, w: wobble(0.3) }));
+    glints = Array.from({ length: Math.round(clamp(W * H / 24000, 10, 34)) }, () => ({
+      x: rand(0, W), y: rand(0, H), len: rand(10, 34) * Math.max(0.6, K), ph: rand(0, 6.28), sp: rand(4, 10),
+    }));
+    clumps = [{ x: -0.02 * W, y: 1.02 * H, n: 9, r: 0.2 * S }, { x: 1.02 * W, y: -0.03 * H, n: 7, r: 0.16 * S }]
+      .map((c) => ({ ...c, blades: Array.from({ length: c.n }, () => ({ a: rand(0, 6.28), l: rand(0.55, 1), b: rand(-0.4, 0.4) })) }));
+  }
+
+  function resize() {
+    W = stage.clientWidth; H = stage.clientHeight; S = Math.min(W, H);
+    const dpr = devicePixelRatio || 1;
+    cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const k = clamp(S / 600, 0.38, 0.95);
+    if (Math.abs(k - K) > 0.01) { K = k; d.setSize(K); }
+    buildScene();
+  }
+  addEventListener('resize', resize); resize();
+
+  /* ---------- 순찰 ---------- */
+  const margin = () => Math.max(55 * K, S * 0.13);
+  const vmax = () => S * 1.05 + 90;            // 질주 속도(px/s): 화면이 작아도 '빠르게' 보이게
+  let side = 1;
+  function nextWaypoint() {
+    const m = margin();
+    side = -side;
+    if (Math.random() < 0.22) return { x: rand(m, W - m), y: rand(m, H - m) };   // 가끔 영역 안 아무 데나
+    const band = (W - 2 * m) * 0.28;
+    return {
+      x: side > 0 ? rand(W - m - band, W - m) : rand(m, m + band),             // 영역 양 끝을 오감
+      y: rand(m, H - m),
+    };
+  }
+
+  d.x = W * 0.3; d.y = H * 0.5; d.heading = 90;
+  const vel = { x: 0, y: 0 };
+  let mode = 'hover', modeT = 0, hoverFor = 0.6;
+  let wp = nextWaypoint(), turn = null, dip = null, dipDone = false, runLen = 1;
+  const hov = { x: d.x, y: d.y, h: d.heading };
+  const wx = wobble(1.1), wy = wobble(0.9), wh = wobble(0.7), wa = wobble(0.35);
+  let prevSpeed = 0, acc = 0;
+  const ripples = [];
+
+  const bearingTo = (p) => Math.atan2(p.y - d.y, p.x - d.x) * RAD + 90;
+  function setMode(m) { mode = m; modeT = 0; }
+  function startRun() {
+    setMode('run');
+    runLen = Math.hypot(wp.x - d.x, wp.y - d.y);
+    dipDone = Math.random() > 0.4;          // 이번 질주에서 물 찍기 할지
+  }
+
+  loop((dt, t) => {
+    if (!dt) return;
+    modeT += dt;
+    const V = vmax();
+    let speedGoal = 0, grip = 7, altGoal = 44 + wa(t) * 8;
+    const dist = Math.hypot(wp.x - d.x, wp.y - d.y);
+
+    if (mode === 'run' || mode === 'flick') {
+      const b = bearingTo(wp);
+      const diff = angDiffDeg(d.heading, b);
+      if (mode === 'run') {
+        // 직선 유지: 방향 보정은 아주 천천히
+        d.heading += clamp(diff, -70 * dt, 70 * dt);
+        speedGoal = V;
+        const brakeDist = (prevSpeed * prevSpeed) / (2 * V * 3.2) + 6 * K;
+        if (!dipDone && !dip && dist < runLen * 0.62 && dist > runLen * 0.25) {
+          const room = Math.max(1, Math.floor(dist / (V * 0.5 * 0.56)));   // 남은 거리만큼만 연속 찍기
+          dip = { t: 0, taps: Math.min(room, Math.random() < 0.45 ? rand(2, 3.99) | 0 : 1), a0: d.alt, hit: false };
+          dipDone = true;
+        }
+        if (dist < brakeDist) {
+          if (Math.random() < 0.3 && !dip) { wp = nextWaypoint(); setMode('flick'); }   // 멈추지 않고 급선회
+          else setMode('brake');
+        }
+      } else {
+        // 급선회: 큰 회전 속도 + 속도 줄임 → 크게 기울어짐
+        d.heading += clamp(diff, -430 * dt, 430 * dt);
+        speedGoal = V * 0.5; grip = 4.5;
+        if (Math.abs(diff) < 6) startRun();
+      }
+    } else if (mode === 'brake') {
+      speedGoal = 0; grip = 6;
+      if (prevSpeed < V * 0.04 || modeT > 0.6) {
+        hov.x = d.x; hov.y = d.y; hov.h = d.heading - wh(t) * 2;
+        hoverFor = Math.random() < 0.2 ? rand(1.4, 2.6) : rand(0.3, 1.1);
+        setMode('hover');
+      }
+    } else if (mode === 'hover') {
+      speedGoal = 0; grip = 10;
+      d.heading = hov.h + wh(t) * 2;
+      if (modeT > hoverFor) {
+        wp = nextWaypoint();
+        const b = bearingTo(wp);
+        turn = { h0: d.heading, dh: angDiffDeg(d.heading, b) + rand(-6, 6) };
+        turn.dur = 0.13 + Math.abs(turn.dh) / 180 * 0.12;
+        setMode('turn');
+      }
+    } else if (mode === 'turn') {
+      speedGoal = 0; grip = 10;
+      d.heading = turn.h0 + turn.dh * easeOutBack(modeT / turn.dur, 1.3);
+      if (modeT > turn.dur + 0.05) startRun();
+    }
+
+    // 물 찍기: 내려가기 → 수면 접촉(파문) → 올라가기, 여러 번이면 덜 올라갔다 다시
+    if (dip) {
+      dip.t += dt;
+      const T1 = 0.24, T2 = 0.05, T3 = 0.27;
+      const top = dip.taps > 1 ? 16 : altGoal;
+      speedGoal *= 0.5;
+      if (dip.t < T1) { d.alt = lerp(dip.a0, 2, ease(dip.t / T1)); d.abdDip = ease(dip.t / T1); }
+      else if (dip.t < T1 + T2) {
+        d.alt = 2; d.abdDip = 1;
+        if (!dip.hit) { dip.hit = true; const p = d.tipPoint(); ripples.push({ x: p.x, y: p.y, t: 0, k: K }); }
+      } else if (dip.t < T1 + T2 + T3) {
+        const u = (dip.t - T1 - T2) / T3;
+        d.alt = lerp(2, top, easeOutQuart(u)); d.abdDip = 1 - ease(u);
+      } else {
+        dip.taps--;
+        if (dip.taps > 0) { dip.t = 0; dip.a0 = d.alt; dip.hit = false; }
+        else dip = null;
+      }
+    } else {
+      d.alt = lerp(d.alt, altGoal, Math.min(1, dt * 3));
+      d.abdDip = lerp(d.abdDip, 0, Math.min(1, dt * 6));
+    }
+
+    // 속도: 머리 방향으로 원하는 속도 → 실제 속도 벡터가 grip 만큼 늦게 따라감 (선회 때 미끄러짐)
+    const hr = d.heading / RAD;
+    const gx = Math.sin(hr) * speedGoal, gy = -Math.cos(hr) * speedGoal;
+    const g = 1 - Math.exp(-grip * dt);
+    vel.x += (gx - vel.x) * g; vel.y += (gy - vel.y) * g;
+    const speed = Math.hypot(vel.x, vel.y);
+    acc = lerp(acc, (speed - prevSpeed) / dt, Math.min(1, dt * 10));
+    prevSpeed = speed;
+
+    if (mode === 'hover' || mode === 'turn') {
+      // 정지비행: 자리 고정 + 작은 흔들림
+      const sx = d.x, sy = d.y;
+      d.x = lerp(d.x, hov.x + wx(t) * 2.5 * K, Math.min(1, dt * 8));
+      d.y = lerp(d.y, hov.y + wy(t) * 2.5 * K, Math.min(1, dt * 8));
+      vel.x = (d.x - sx) / dt; vel.y = (d.y - sy) / dt;
+    } else {
+      d.x += vel.x * dt; d.y += vel.y * dt;
+      hov.x = d.x; hov.y = d.y;
+    }
+
+    // 자세: 가속 → 머리 숙임, 제동 → 머리 듦 / 선회 → 속도에 비례해 기울기
+    const sr = clamp(speed / V, 0, 1);
+    const pitchGoal = clamp(acc / V * 3.2, -16, 12) - (dip ? 5 * d.abdDip : 0);
+    d.pitch = lerp(d.pitch, pitchGoal, Math.min(1, dt * 10));
+    d.bank = lerp(d.bank, clamp(d.yawRate * 0.1 * Math.min(1, sr * 2), -44, 44), Math.min(1, dt * 12));
+    d.phaseOffset = lerp(170, 65, sr);                         // 정지비행 ↔ 전진비행 위상차
+    d.amp = 27 + clamp(Math.abs(acc) / V, 0, 1) * 10;
+    d.update(dt);
+    d.render();
+
+    drawWater(dt, t);
+  });
+
+  /* ---------- 물 그리기 ---------- */
+  function drawWater(dt, t) {
+    ctx.clearRect(0, 0, W, H);
+    // 물결 반짝임: 짧은 가로선이 천천히 흐르며 깜빡임
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1.3;
+    for (const s of glints) {
+      s.x += s.sp * dt; if (s.x - s.len > W) s.x = -s.len;
+      const a = Math.max(0, Math.sin(t * 0.7 + s.ph)) * (dark ? 0.1 : 0.38);
+      if (a < 0.01) continue;
+      ctx.globalAlpha = a;
+      ctx.beginPath(); ctx.moveTo(s.x - s.len / 2, s.y); ctx.quadraticCurveTo(s.x, s.y - 1.5, s.x + s.len / 2, s.y); ctx.stroke();
+    }
+    // 모서리 풀 덤불 (위에서 본 잎끝)
+    ctx.strokeStyle = col.leaf; ctx.lineWidth = Math.max(1.5, 3 * K);
+    for (const c of clumps) {
+      for (const bl of c.blades) {
+        const sway = Math.sin(t * 0.9 + bl.a * 3) * 0.04;
+        const a = bl.a + sway, L = c.r * bl.l;
+        ctx.globalAlpha = 0.75;
+        ctx.beginPath(); ctx.moveTo(c.x, c.y);
+        ctx.quadraticCurveTo(c.x + Math.cos(a) * L * 0.5, c.y + Math.sin(a) * L * 0.5,
+                             c.x + Math.cos(a + bl.b) * L, c.y + Math.sin(a + bl.b) * L);
+        ctx.stroke();
+      }
+    }
+    // 연잎: 갈라진 원 + 잎맥, 아주 천천히 흔들림
+    for (const p of pads) {
+      const a = p.a + p.w(t) * 0.05;
+      ctx.globalAlpha = 0.85; ctx.fillStyle = col.leaf;
+      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.arc(p.x, p.y, p.r, a + 0.28, a + Math.PI * 2 - 0.28); ctx.closePath(); ctx.fill();
+      ctx.globalAlpha = 0.25; ctx.strokeStyle = col.ink; ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      for (let i = 1; i < 8; i++) {
+        const va = a + 0.28 + (i / 8) * (Math.PI * 2 - 0.56);
+        ctx.moveTo(p.x, p.y); ctx.lineTo(p.x + Math.cos(va) * p.r * 0.85, p.y + Math.sin(va) * p.r * 0.85);
+      }
+      ctx.stroke();
+    }
+    // 파문: 고리 3개가 시간차로 퍼짐. 처음엔 빠르게, 점점 느리게 + 옅어짐
+    for (let i = ripples.length - 1; i >= 0; i--) {
+      const r = ripples[i];
+      r.t += dt;
+      if (r.t > 2.4) { ripples.splice(i, 1); continue; }
+      for (let j = 0; j < 3; j++) {
+        const tt = r.t - j * 0.16;
+        if (tt <= 0) continue;
+        const life = 1 - tt / (2.2 - j * 0.3);
+        if (life <= 0) continue;
+        const R = (3 + 70 * (1 - Math.exp(-tt * 1.6)) + 9 * tt) * r.k * (1 - j * 0.12);
+        ctx.globalAlpha = Math.pow(life, 1.6) * (0.55 - j * 0.12);
+        ctx.lineWidth = Math.max(0.8, 1.6 * r.k * life + 0.4);
+        ctx.strokeStyle = col.ink;
+        ctx.beginPath(); ctx.ellipse(r.x, r.y, R, R * 0.94, 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.strokeStyle = '#fff';
+        ctx.globalAlpha *= dark ? 0.35 : 0.9;
+        ctx.beginPath(); ctx.ellipse(r.x, r.y + 1.2, Math.max(0, R - 1.6), Math.max(0, R * 0.94 - 1.6), 0, 0, Math.PI * 2); ctx.stroke();
+      }
+      // 찍은 순간의 작은 물방울 반짝
+      if (r.t < 0.25) {
+        ctx.globalAlpha = (1 - r.t / 0.25) * 0.8; ctx.fillStyle = '#fff';
+        ctx.beginPath(); ctx.arc(r.x, r.y, (2 + r.t * 10) * r.k, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+</script>
+</body>
+</html>

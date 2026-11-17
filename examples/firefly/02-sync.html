@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  반딧불이 02 · 깜빡임 동기화
+  마리마다 '위상'(0~2π)과 조금씩 다른 고유 박자를 가진 진동자. 위상이 한 바퀴 돌 때마다 한 번 번쩍임.
+  쿠라모토 결합: 가까이 보이는 이웃일수록 강하게 서로의 위상 쪽으로 끌어당김 → 근처끼리 먼저 맞고, 점점 전체가 한 박자로.
+  작은 잡음을 넣어 완전히 기계적으로 맞지는 않게 함. 동기화 정도 R(0~100%) = 위상 벡터 평균의 길이.
+  ※ 밤 장면 전용이라 자체 어두운 색을 씀.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>반딧불이 02 · 깜빡임 동기화</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  body { background: #05090d; }
+  .hint { color: rgba(196, 214, 186, 0.62); }
+  .hint b { color: #eaf6c8; }
+  .ui { color: rgba(196, 214, 186, 0.75); }
+  .ui button { color: #e6f2d2; border-color: rgba(220, 240, 200, 0.28); background: rgba(10, 20, 16, 0.4); }
+  .ui { top: 10px; bottom: auto; }
+  .meter { display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+  .bar { width: min(70px, 16vw); height: 4px; border-radius: 2px; background: rgba(220, 240, 200, 0.15); overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: #d6ff6e; border-radius: 2px; }
+</style>
+</head>
+<body>
+<canvas class="fill" id="cv"></canvas>
+<p class="hint">처음엔 제각각 → <b>점점 한 박자로</b></p>
+<div class="ui">
+  <span class="meter">동기화 <span class="bar"><i id="bar"></i></span> <b id="pct" style="color:#eaf6c8;font-weight:600">0%</b></span>
+  <button id="reset">다시 흩트리기</button>
+</div>
+
+<script>
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  const bar = document.getElementById('bar'), pct = document.getElementById('pct');
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const TAU = Math.PI * 2;
+  let W = 0, H = 0, S = 0, dpr = 1;
+
+  /* ---------- 동기화 설정 ---------- */
+  const PERIOD = 1.7;        // 평균 깜빡임 주기(초)
+  const SPREAD = 0.08;       // 고유 박자 차이 ±8%
+  const K = 0.62;            // 결합 세기: 클수록 빨리 맞음 (0.5 이하면 잘 안 맞음)
+  const WARMUP = 9;          // 흩트린 직후엔 결합을 약하게 시작해 서서히 키움(초)
+  const NOISE = 0.09;        // 위상 잡음
+
+  function makeSprite(r, g, b) {
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const x = c.getContext('2d');
+    const gr = x.createRadialGradient(64, 64, 0, 64, 64, 64);
+    gr.addColorStop(0, 'rgba(255,255,235,1)');
+    gr.addColorStop(0.08, `rgba(${r},${g},${b},0.95)`);
+    gr.addColorStop(0.22, `rgba(${r},${g},${b},0.42)`);
+    gr.addColorStop(0.5, `rgba(${r},${g},${b},0.12)`);
+    gr.addColorStop(1, `rgba(${r},${g},${b},0)`);
+    x.fillStyle = gr; x.fillRect(0, 0, 128, 128);
+    return c;
+  }
+  const sprites = [makeSprite(214, 255, 110), makeSprite(236, 250, 120), makeSprite(180, 250, 120)];
+
+  const bg = document.createElement('canvas'), bgx = bg.getContext('2d');
+  function paintBackdrop() {
+    bg.width = W * dpr; bg.height = H * dpr;
+    bgx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const sky = bgx.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, '#05090f'); sky.addColorStop(0.6, '#0a1517'); sky.addColorStop(1, '#0d1c15');
+    bgx.fillStyle = sky; bgx.fillRect(0, 0, W, H);
+    for (let i = 0; i < W * H / 5000; i++) {
+      const y = Math.pow(Math.random(), 1.6) * H * 0.5;
+      bgx.globalAlpha = rand(0.12, 0.5) * (1 - y / (H * 0.5));
+      bgx.fillStyle = '#cfd8ea';
+      bgx.fillRect(rand(0, W), y, rand(0.6, 1.3), rand(0.6, 1.3));
+    }
+    bgx.globalAlpha = 1;
+    // 나무 실루엣 (한 그루 덤불처럼 — 반딧불이가 모이는 자리)
+    bgx.fillStyle = '#060e0b';
+    bgx.beginPath(); bgx.moveTo(0, H);
+    for (let x = 0; x <= W + 16; x += 16) bgx.lineTo(x, H * 0.8 - Math.abs(Math.sin(x * 0.011) * 26 + Math.sin(x * 0.037) * 10) * (S / 700));
+    bgx.lineTo(W, H); bgx.fill();
+  }
+
+  /* ---------- 반딧불이 = 위상 진동자 ---------- */
+  let flies = [];
+  function makeFly() {
+    const z = Math.pow(Math.random(), 0.8);
+    return {
+      x: rand(0, W), y: rand(H * 0.15, H * 0.8), z,
+      a: rand(0, TAU), turn: 0, speed: rand(4, 10) * (0.45 + z * 0.75),
+      bobF: rand(0.4, 0.9), bobP: rand(0, 6.28), bobA: rand(2, 5),
+      bright: rand(0.65, 1) * (0.45 + 0.55 * z),
+      sprite: sprites[(Math.random() * sprites.length) | 0],
+      th: rand(0, TAU), w: (TAU / PERIOD) * (1 + rand(-SPREAD, SPREAD)), I: 0,
+    };
+  }
+  let since = 0;             // 흩트린 뒤 지난 시간
+  function scatter() {
+    since = 0;
+    for (const f of flies) { f.th = rand(0, TAU); f.w = (TAU / PERIOD) * (1 + rand(-SPREAD, SPREAD)); }
+  }
+  document.getElementById('reset').addEventListener('click', scatter);
+
+  // 위상 → 밝기: 천천히 차오름 → 짧게 번쩍 → 천천히 꺼짐 → 나머지는 어둠
+  function envelope(th) {
+    const f = th / TAU;
+    if (f < 0.1) { const u = f / 0.1; return 0.6 * u * u; }
+    if (f < 0.15) { const u = (f - 0.1) / 0.05; return 0.6 + 0.4 * Math.sin(Math.PI * u) - 0.1 * u; }
+    if (f < 0.6) { const q = (f - 0.15) / 0.45; return 0.5 * Math.exp(-q * 4.2) * (1 - q * q); }
+    return 0;
+  }
+
+  function resize() {
+    W = innerWidth; H = innerHeight; S = Math.min(W, H); dpr = Math.min(2, devicePixelRatio || 1);
+    cv.width = W * dpr; cv.height = H * dpr;
+    paintBackdrop();
+    const n = clamp(Math.round(W * H / 14000), 30, 50);
+    while (flies.length < n) flies.push(makeFly());
+    flies.length = n;
+    flies.forEach((f) => { f.x = clamp(f.x, 0, W); f.y = clamp(f.y, H * 0.1, H * 0.85); });
+    flies.sort((a, b) => a.z - b.z);
+  }
+  addEventListener('resize', resize); resize();
+
+  const dth = [];
+  function couple(dt) {
+    // 각자: 고유 박자 + K × (보이는 이웃들의 위상 쪽으로 끌림, 가까울수록 큰 가중치)
+    const sig2 = 2 * Math.pow(0.32 * S, 2);
+    since += dt;
+    const kNow = K * Math.min(1, 0.25 + since / WARMUP);
+    for (let i = 0; i < flies.length; i++) {
+      const p = flies[i];
+      let s = 0, ws = 0;
+      for (let j = 0; j < flies.length; j++) {
+        if (i === j) continue;
+        const q = flies[j], dx = q.x - p.x, dy = q.y - p.y;
+        const w = Math.exp(-(dx * dx + dy * dy) / sig2);
+        s += w * Math.sin(q.th - p.th); ws += w;
+      }
+      dth[i] = p.w + (ws > 0 ? kNow * s / ws : 0);
+    }
+    let cx = 0, cy = 0;
+    flies.forEach((p, i) => {
+      p.th += dth[i] * dt + (Math.random() - 0.5) * NOISE * Math.sqrt(dt) * 2;
+      p.th = ((p.th % TAU) + TAU) % TAU;
+      cx += Math.cos(p.th); cy += Math.sin(p.th);
+    });
+    return Math.hypot(cx, cy) / flies.length;                  // 동기화 정도 R
+  }
+
+  function move(f, dt) {
+    f.turn += (rand(-1, 1) * 2.2 - f.turn * 1.3) * dt;
+    const cx = W / 2 - f.x, cy = H * 0.5 - f.y;
+    const out = Math.max(Math.abs(cx) / (W * 0.52), Math.abs(cy) / (H * 0.38)) - 1;
+    if (out > -0.15) {
+      let d = Math.atan2(cy, cx) - f.a;
+      d = Math.atan2(Math.sin(d), Math.cos(d));
+      f.turn += d * (out + 0.15) * 6 * dt;
+    }
+    f.a += f.turn * dt;
+    const sp = f.speed * (S / 700) * (1 - f.I * 0.3);
+    f.x += Math.cos(f.a) * sp * dt;
+    f.y += Math.sin(f.a) * sp * 0.6 * dt - f.I * 10 * (S / 700) * dt;   // 번쩍일 때 살짝 솟음
+  }
+
+  let R = 0, Rshow = 0, lastPct = -1, last = null;
+  function frame(now) {
+    const dt = last == null ? 0 : Math.min(0.05, (now - last) / 1000);
+    last = now;
+    const t = now / 1000;
+    R = couple(dt);
+    Rshow += (R - Rshow) * Math.min(1, dt * 2);                 // 숫자가 덜덜 떨리지 않게
+    const p = Math.round(Rshow * 100);
+    if (p !== lastPct) { lastPct = p; pct.textContent = p + '%'; bar.style.width = p + '%'; }
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+    ctx.drawImage(bg, 0, 0, W, H);
+    ctx.globalCompositeOperation = 'lighter';
+    const k = S / 700;
+    for (const f of flies) {
+      move(f, dt);
+      f.I = envelope(f.th);
+      const y = f.y + Math.sin(t * f.bobF + f.bobP) * f.bobA * k;
+      const I = f.I * f.bright;
+      const Rr = (20 + 40 * f.z) * k;
+      const glow = Math.max(I, 0.035 * f.bright);
+      ctx.globalAlpha = clamp(glow * 1.2, 0, 1);
+      const sz = Rr * (0.55 + 0.75 * glow);
+      ctx.drawImage(f.sprite, f.x - sz, y - sz, sz * 2, sz * 2);
+      if (I > 0.22) {
+        ctx.globalAlpha = (I - 0.22) * 0.3;
+        const big = Rr * 3.4;
+        ctx.drawImage(f.sprite, f.x - big, y - big, big * 2, big * 2);
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>

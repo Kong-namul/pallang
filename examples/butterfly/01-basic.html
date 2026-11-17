@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>나비 01 · 제자리 날갯짓</title>
+<!-- 순수 CSS. 날갯짓 키프레임은 ../../assets/butterfly.css 의 .bf--css 참고 -->
+<link rel="stylesheet" href="../../assets/butterfly.css">
+<style>
+  .row { position: fixed; inset: 0; display: grid; grid-template-columns: repeat(3, 1fr); }
+  .cell { position: relative; perspective: 700px; perspective-origin: 50% 30%; }
+  .cell .bf { left: 50%; top: 46%; }
+  .cell label { position: absolute; left: 0; right: 0; bottom: 18%; text-align: center; font-size: 12px; color: var(--muted); }
+  /* 세 가지 속도: 빠르게 / 보통 / 느긋하게 */
+  .fast   { --flap: 0.7s;  --s: .8; }
+  .normal { --flap: 1.3s; --s: 1; }
+  .lazy   { --flap: 2s; --s: 1.15; --hue: 160deg; }
+</style>
+</head>
+<body>
+<div class="row">
+  <div class="cell">
+    <div class="bf bf--css fast">
+      <div class="bf-plane"><div class="bf-shadow"></div><div class="bf-rig">
+        <div class="bf-wing bf-wing--l"><span style="--i:0"><i></i><span style="--i:1"><i></i><span style="--i:2"><i></i><span style="--i:3"><i></i><span style="--i:4"><i></i><span style="--i:5"><i></i><span style="--i:6"><i></i><span style="--i:7"><i></i><span style="--i:8"><i></i><span style="--i:9"><i></i></span></span></span></span></span></span></span></span></span></span></div><div class="bf-wing bf-wing--r"><span style="--i:0"><i></i><span style="--i:1"><i></i><span style="--i:2"><i></i><span style="--i:3"><i></i><span style="--i:4"><i></i><span style="--i:5"><i></i><span style="--i:6"><i></i><span style="--i:7"><i></i><span style="--i:8"><i></i><span style="--i:9"><i></i></span></span></span></span></span></span></span></span></span></span></div><div class="bf-body"></div>
+      </div></div>
+    </div>
+    <label>0.7s 파닥파닥</label>
+  </div>
+  <div class="cell">
+    <div class="bf bf--css normal">
+      <div class="bf-plane"><div class="bf-shadow"></div><div class="bf-rig">
+        <div class="bf-wing bf-wing--l"><span style="--i:0"><i></i><span style="--i:1"><i></i><span style="--i:2"><i></i><span style="--i:3"><i></i><span style="--i:4"><i></i><span style="--i:5"><i></i><span style="--i:6"><i></i><span style="--i:7"><i></i><span style="--i:8"><i></i><span style="--i:9"><i></i></span></span></span></span></span></span></span></span></span></span></div><div class="bf-wing bf-wing--r"><span style="--i:0"><i></i><span style="--i:1"><i></i><span style="--i:2"><i></i><span style="--i:3"><i></i><span style="--i:4"><i></i><span style="--i:5"><i></i><span style="--i:6"><i></i><span style="--i:7"><i></i><span style="--i:8"><i></i><span style="--i:9"><i></i></span></span></span></span></span></span></span></span></span></span></div><div class="bf-body"></div>
+      </div></div>
+    </div>
+    <label>1.3s 팔랑팔랑</label>
+  </div>
+  <div class="cell">
+    <div class="bf bf--css lazy">
+      <div class="bf-plane"><div class="bf-shadow"></div><div class="bf-rig">
+        <div class="bf-wing bf-wing--l"><span style="--i:0"><i></i><span style="--i:1"><i></i><span style="--i:2"><i></i><span style="--i:3"><i></i><span style="--i:4"><i></i><span style="--i:5"><i></i><span style="--i:6"><i></i><span style="--i:7"><i></i><span style="--i:8"><i></i><span style="--i:9"><i></i></span></span></span></span></span></span></span></span></span></span></div><div class="bf-wing bf-wing--r"><span style="--i:0"><i></i><span style="--i:1"><i></i><span style="--i:2"><i></i><span style="--i:3"><i></i><span style="--i:4"><i></i><span style="--i:5"><i></i><span style="--i:6"><i></i><span style="--i:7"><i></i><span style="--i:8"><i></i><span style="--i:9"><i></i></span></span></span></span></span></span></span></span></span></span></div><div class="bf-body"></div>
+      </div></div>
+    </div>
+    <label>2s 느긋하게</label>
+  </div>
+</div>
+<p class="hint"><b>--flap</b> 속도 · <b>--bend</b> 날개 휨</p>
+</body>
+</html>

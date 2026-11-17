@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>나비 11 · three.js 3D</title>
+<!-- three.js: 날개 = 텍스처 붙인 평면 2장 + 경첩(Group) 회전.
+     3D 곡선(CatmullRom)을 따라 날고, 진행 방향을 바라보며(lookAt), 도는 만큼 몸을 기울임(roll).
+     날개 움직임은 ykob/sketch-threejs 의 butterfly 셰이더(MIT) 방식: 몸에서 먼 조각일수록 늦게 따라오는 사인파.
+     참고: codepen.io/ykob/pen/oeOrJV, smrghsh.github.io/butterfly -->
+<link rel="stylesheet" href="../../assets/butterfly.css">
+<style> canvas { display: block; position: fixed; inset: 0; } </style>
+<script type="importmap">
+  { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+</head>
+<body>
+<p class="hint">3D 공간 곡선을 따라 비행 · 바닥 격자와 그림자로 <b>높이감</b></p>
+<script type="module">
+  import * as THREE from 'three';
+
+  // 날개 그림 (assets/wing.svg 와 같은 내용을 data URI로 — file:// 에서도 텍스처가 뜨도록)
+  const WING = `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="260" viewBox="0 0 120 130"><defs><linearGradient id="f" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#E5641C"/><stop offset="1" stop-color="#F8B04A"/></linearGradient><linearGradient id="h" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#E86E1F"/><stop offset="1" stop-color="#F6A63E"/></linearGradient><radialGradient id="r" cx="0" cy="0.5" r="0.45"><stop offset="0" stop-color="#1D1712" stop-opacity="0.85"/><stop offset="1" stop-color="#1D1712" stop-opacity="0"/></radialGradient></defs><path fill="#1D1712" d="M6 66 C40 66 80 68 96 80 C102 98 86 118 62 124 C40 128 20 112 10 94 C6 84 4 74 6 66 Z"/><path fill="url(#h)" d="M14 72 C34 70 54 72 66 78 C60 92 50 104 40 112 C28 104 18 92 14 80 Z"/><path fill="url(#h)" d="M70 80 C80 82 88 86 90 92 C86 104 76 112 64 116 C58 114 52 112 46 112 C56 102 64 92 70 80 Z"/><path fill="#1D1712" d="M4 52 C20 30 50 8 112 8 C118 20 108 44 92 60 C70 66 40 66 6 64 Z"/><path fill="url(#f)" d="M14 52 C28 36 46 24 70 18 C60 32 52 44 46 58 C34 59 22 58 14 56 Z"/><path fill="url(#f)" d="M52 58 C58 42 68 28 80 18 C88 24 92 36 86 52 C76 57 64 58 52 58 Z"/><path fill="#FBD38A" d="M84 16 C94 14 104 14 108 16 C106 24 100 32 94 38 C92 30 90 22 84 16 Z"/><rect x="0" y="20" width="60" height="100" fill="url(#r)"/><g fill="#FFF7EA"><circle cx="107" cy="22" r="1.7"/><circle cx="104" cy="33" r="1.9"/><circle cx="98" cy="45" r="1.7"/><circle cx="90" cy="55" r="1.4"/><circle cx="94" cy="92" r="1.7"/><circle cx="88" cy="104" r="1.9"/><circle cx="78" cy="114" r="1.7"/><circle cx="64" cy="120" r="1.6"/><circle cx="48" cy="120" r="1.4"/></g></svg>`;
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  document.body.prepend(renderer.domElement);
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
+
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  const grid = new THREE.GridHelper(24, 48, dark ? 0x3a4a42 : 0xb9c8bd, dark ? 0x2a3630 : 0xcfdad1);
+  grid.material.transparent = true; grid.material.opacity = 0.55;
+  scene.add(grid);
+
+  const tex = new THREE.TextureLoader().load('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(WING));
+  tex.colorSpace = THREE.SRGBColorSpace;
+
+  // 바닥 그림자용 흐린 원 텍스처
+  const sc = document.createElement('canvas'); sc.width = sc.height = 64;
+  const g2 = sc.getContext('2d'); const rg = g2.createRadialGradient(32, 32, 0, 32, 32, 32);
+  rg.addColorStop(0, 'rgba(0,0,0,0.35)'); rg.addColorStop(1, 'rgba(0,0,0,0)');
+  g2.fillStyle = rg; g2.fillRect(0, 0, 64, 64);
+  const shadowTex = new THREE.CanvasTexture(sc);
+
+  const ease = (t) => 0.5 - 0.5 * Math.cos(Math.PI * t);
+  const flap = (p) => 0.52 + 0.79 * Math.cos(p * Math.PI * 2);   // 30° ± 45° 사인파 (ykob 방식)
+  const rand = (a, b) => a + Math.random() * (b - a);
+
+  // 날개 한 장 = 세로 조각 5개가 경첩으로 이어진 사슬. 바깥 조각이 늦게 따라와서 종이처럼 휨
+  const SEG = 10, FLEX = 0.14;   // FLEX = 날개 끝이 뿌리보다 늦는 정도(박자 비율)
+  const wrap01 = (p) => ((p % 1) + 1) % 1;
+  function wingChain(mat) {
+    const segs = []; let parent = null;
+    for (let i = 0; i < SEG; i++) {
+      const geo = new THREE.PlaneGeometry(1 / SEG, 130 / 120);
+      const uv = geo.attributes.uv;
+      for (let k = 0; k < uv.count; k++) uv.setX(k, (i + uv.getX(k)) / SEG);   // 날개 그림의 i번째 세로 조각
+      geo.translate(0.5 / SEG, 0, 0);    // 경첩(안쪽 모서리)을 원점으로
+      geo.rotateX(-Math.PI / 2);         // 수평으로 눕히기, 그림 위쪽 = 앞(-Z)
+      const g = new THREE.Group(); g.add(new THREE.Mesh(geo, mat));
+      if (parent) { g.position.x = 1 / SEG; parent.add(g); }
+      parent = g; segs.push(g);
+    }
+    return { root: segs[0], segs };
+  }
+
+  function makeButterfly(tint, size) {
+    const root = new THREE.Group();
+    const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, alphaTest: 0.05, side: THREE.DoubleSide, color: tint });
+    const R = wingChain(mat), L = wingChain(mat);
+    const hingeR = R.root;
+    const hingeL = new THREE.Group(); hingeL.scale.x = -1; hingeL.add(L.root);   // 왼쪽 = 오른쪽을 좌우 반전
+    const bodyMat = new THREE.MeshBasicMaterial({ color: 0x2b221b });
+    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.045, 0.5, 4, 8), bodyMat);
+    body.rotation.x = Math.PI / 2; body.position.z = 0.12;
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), bodyMat); head.position.z = -0.2;
+    root.add(hingeR, hingeL, body, head);
+    root.scale.setScalar(size);
+    scene.add(root);
+
+    const shadow = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 1.2), new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false }));
+    shadow.rotation.x = -Math.PI / 2; shadow.position.y = 0.002;
+    scene.add(shadow);
+
+    // 하늘에 닫힌 3D 곡선 하나
+    const pts = Array.from({ length: 7 }, (_, i) => {
+      const a = (i / 7) * Math.PI * 2 + rand(-0.3, 0.3);
+      const r = rand(2.2, 4.2);
+      return new THREE.Vector3(Math.cos(a) * r, rand(0.6, 2.6), Math.sin(a) * r - 1);
+    });
+    const curve = new THREE.CatmullRomCurve3(pts, true, 'centripetal');
+    return { root, wings: [R, L], shadow, curve, len: curve.getLength(), u: Math.random(), phase: Math.random(),
+             speed: rand(0.9, 1.3), rate: rand(1.3, 1.7), glide: 0, glideT: 0, nextGlide: rand(2, 5), roll: 0, prevTan: null, size };
+  }
+
+  const flock = [
+    makeButterfly(0xffffff, 0.75),
+    makeButterfly(0xffe2ec, 0.55),
+    makeButterfly(0xd8f0ff, 0.6),
+    makeButterfly(0xfff3d0, 0.5),
+  ];
+
+  // 꽃가루 입자
+  const pg = new THREE.BufferGeometry();
+  const pp = new Float32Array(240 * 3);
+  for (let i = 0; i < pp.length; i += 3) { pp[i] = rand(-8, 8); pp[i + 1] = rand(0.1, 4); pp[i + 2] = rand(-8, 4); }
+  pg.setAttribute('position', new THREE.BufferAttribute(pp, 3));
+  scene.add(new THREE.Points(pg, new THREE.PointsMaterial({ color: dark ? 0xf3d48a : 0xd9a441, size: 0.035, transparent: true, opacity: 0.7 })));
+
+  function resize() {
+    renderer.setSize(innerWidth, innerHeight);
+    camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  }
+  addEventListener('resize', resize); resize();
+
+  const target = new THREE.Vector3();
+  let last = performance.now(), orbit = 0;
+  renderer.setAnimationLoop((now) => {
+    const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now;
+    orbit += dt * 0.06;
+    camera.position.set(Math.sin(orbit) * 8, 2.6, Math.cos(orbit) * 8);
+    camera.lookAt(0, 1.1, -0.5);
+
+    for (const b of flock) {
+      // 활공 타이밍
+      if (b.glideT > 0) { b.glideT -= dt; if (b.glideT <= 0) b.nextGlide = rand(2.5, 6); }
+      else if ((b.nextGlide -= dt) <= 0) b.glideT = rand(0.4, 0.9);
+      b.glide += ((b.glideT > 0 ? 1 : 0) - b.glide) * Math.min(1, dt * 8);
+
+      b.phase = (b.phase + dt * b.rate * (1 - b.glide)) % 1;
+      const a = flap(b.phase) * (1 - b.glide) + 0.25 * b.glide;
+      for (const w of b.wings) {
+        w.segs[0].rotation.z = a;
+        for (let i = 1; i < SEG; i++) {
+          w.segs[i].rotation.z = (flap(b.phase - FLEX * i / (SEG - 1)) - flap(b.phase - FLEX * (i - 1) / (SEG - 1))) * (1 - b.glide) + 0.02 * b.glide;
+        }
+      }
+      const push = (1.31 - flap(b.phase)) / 1.58;
+
+      b.u = (b.u + (dt * b.speed * (1 - b.glide * 0.3)) / b.len) % 1;
+      const pos = b.curve.getPointAt(b.u);
+      const tan = b.curve.getTangentAt(b.u);
+      pos.y += push * 0.08 * (1 - b.glide) - b.glide * 0.1;
+      b.root.position.copy(pos);
+      b.root.lookAt(target.copy(pos).sub(tan));   // 앞(-Z)이 진행 방향을 보도록
+
+      // 도는 방향만큼 몸 기울이기
+      if (b.prevTan) {
+        const turn = b.prevTan.x * tan.z - b.prevTan.z * tan.x;
+        b.roll += (THREE.MathUtils.clamp(-turn / dt * 0.6, -0.6, 0.6) - b.roll) * Math.min(1, dt * 4);
+      }
+      b.prevTan = tan.clone();
+      b.root.rotateZ(b.roll);
+
+      b.shadow.position.set(pos.x, 0.002, pos.z);
+      const s = b.size * (1.1 + pos.y * 0.25) * (0.55 + 0.45 * Math.cos(a));
+      b.shadow.scale.set(s, b.size * (1.1 + pos.y * 0.25), 1);
+      b.shadow.material.opacity = Math.max(0.15, 1 - pos.y / 3.5);
+    }
+    renderer.render(scene, camera);
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  무당벌레 02 · 잎 위 산책
+  "가다 서다" 상태 기계: 짧게 달리기 → 멈칫(더듬이만 움직임) → 제자리에서 홱 돌기 → 다시 달리기.
+  다리는 실제로 움직인 거리(+ 제자리 회전량)만큼만 굴러서 미끄러져 보이지 않음.
+  잎 가장자리는 "머리 앞 한 점"이 잎 밖으로 나갔는지로 감지 → 멈춰서 더듬더듬 → 한 발 물러나 안쪽으로 돌아섬.
+  가까이 탭하면 다리·더듬이를 숨기고 죽은 척(굳음) → 더듬이부터 슬쩍 → 반대쪽으로 후다닥.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>무당벌레 02 · 잎 위 산책</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  .stage { touch-action: none; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas class="fill" id="cv"></canvas>
+<div class="stage" id="stage"></div>
+<p class="hint"><b>가다 서다</b> 산책 · 가장자리에선 더듬더듬 돌아섬 · 가까이 <b>탭</b>하면 죽은 척</p>
+
+<script src="../../assets/ladybug.js"></script>
+<script>
+  const { makeLadybug, loop, clamp, lerp, rand, ease, damp, angDiff, RAD, TAU } = LB;
+  const stage = document.getElementById('stage');
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  let W = 0, H = 0, U = 28, leafCol = '#5d9b5a', shade = 'rgba(0,0,0,.25)';
+
+  // ---------------- 잎 ----------------
+  // 잎 좌표: 축을 따라 t = 0(잎자루) ~ 1(끝), 축에서 떨어진 거리 v. 반폭 hw(t)
+  const leaf = { cx: 0, cy: 0, len: 300, rot: -0.3 };
+  const hw = (t) => t <= 0 || t >= 1 ? 0 : 0.36 * Math.pow(Math.sin(Math.PI * Math.pow(t, 0.72)), 0.9);
+  function toLeaf(x, y) {
+    const dx = x - leaf.cx, dy = y - leaf.cy, c = Math.cos(leaf.rot), s = Math.sin(leaf.rot);
+    return { t: (dx * c + dy * s) / leaf.len + 0.5, v: (-dx * s + dy * c) / leaf.len };
+  }
+  function fromLeaf(t, v) {
+    const lx = (t - 0.5) * leaf.len, ly = v * leaf.len, c = Math.cos(leaf.rot), s = Math.sin(leaf.rot);
+    return { x: leaf.cx + lx * c - ly * s, y: leaf.cy + lx * s + ly * c };
+  }
+  /** 잎 가장자리까지 거리(px). 안쪽이 +, 밖이 − */
+  function edgeDist(x, y) {
+    const p = toLeaf(x, y);
+    if (p.t <= 0.005 || p.t >= 0.995) return -Math.max(0.005 - p.t, p.t - 0.995, 0.001) * leaf.len - 1;
+    return Math.min(hw(p.t) - Math.abs(p.v), p.t * 0.9, (1 - p.t) * 0.9) * leaf.len;
+  }
+  function leafPath() {
+    ctx.beginPath();
+    for (let i = 0; i <= 48; i++) { const t = i / 48; ctx.lineTo(t - 0.5, -hw(t)); }
+    for (let i = 48; i >= 0; i--) { const t = i / 48; ctx.lineTo(t - 0.5, hw(t)); }
+    ctx.closePath();
+  }
+  const dapples = Array.from({ length: 5 }, () => ({ a: rand(0, TAU), b: rand(0, TAU), r: rand(0.12, 0.24), sp: rand(0.05, 0.14) }));
+  const ripples = [];
+  function drawLeaf(t, dt) {
+    ctx.clearRect(0, 0, W, H);
+    ctx.save();
+    ctx.translate(leaf.cx, leaf.cy); ctx.rotate(leaf.rot); ctx.scale(leaf.len, leaf.len);
+    const px = 1 / leaf.len;
+    // 잎자루
+    ctx.strokeStyle = leafCol; ctx.lineCap = 'round'; ctx.lineWidth = 7 * px * U / 28;
+    ctx.beginPath(); ctx.moveTo(-0.49, 0); ctx.quadraticCurveTo(-0.6, 0.0, -0.74, 0.07); ctx.stroke();
+    // 잎몸 + 바닥 그림자
+    ctx.shadowColor = shade; ctx.shadowBlur = U * 0.9; ctx.shadowOffsetY = U * 0.35; ctx.shadowOffsetX = U * 0.12;
+    ctx.fillStyle = leafCol; leafPath(); ctx.fill();
+    ctx.shadowColor = 'transparent';
+    ctx.save(); leafPath(); ctx.clip();
+    // 윗면/아랫면 톤 차이 (가운데 맥에서 살짝 접힌 느낌)
+    ctx.fillStyle = 'rgba(255,255,255,.07)'; ctx.fillRect(-0.6, -0.5, 1.2, 0.5);
+    ctx.fillStyle = 'rgba(0,0,0,.07)'; ctx.fillRect(-0.6, 0, 1.2, 0.5);
+    // 나뭇잎 사이로 떨어지는 빛: 천천히 떠다님 → 가만있어도 살아 있는 화면
+    for (const d of dapples) {
+      const x = 0.34 * Math.sin(d.a + t * d.sp), y = 0.2 * Math.sin(d.b + t * d.sp * 1.7);
+      const g = ctx.createRadialGradient(x, y, 0, x, y, d.r);
+      g.addColorStop(0, 'rgba(255,255,210,.13)'); g.addColorStop(1, 'rgba(255,255,210,0)');
+      ctx.fillStyle = g; ctx.fillRect(x - d.r, y - d.r, d.r * 2, d.r * 2);
+    }
+    // 잎맥
+    ctx.strokeStyle = 'rgba(255,255,255,.34)'; ctx.lineWidth = 2.2 * px * U / 28;
+    ctx.beginPath(); ctx.moveTo(-0.5, 0); ctx.quadraticCurveTo(0, 0.012, 0.5, 0); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,.2)'; ctx.lineWidth = 1.1 * px * U / 28;
+    for (let i = 0; i < 9; i++) {
+      const t0 = 0.07 + i * 0.095, t1 = Math.min(0.97, t0 + 0.17 - i * 0.006), h1 = hw(t1) * 0.94;
+      for (const sg of [-1, 1]) {
+        const o = sg > 0 ? 0.035 : 0;      // 좌우 잎맥이 살짝 어긋남
+        ctx.beginPath(); ctx.moveTo(t0 + o - 0.5, 0);
+        ctx.quadraticCurveTo(t0 + o + 0.05 - 0.5, sg * h1 * 0.62, t1 + o * 0.6 - 0.5, sg * hw(Math.min(0.985, t1 + o * 0.6)) * 0.94);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+    // 가장자리 선
+    ctx.strokeStyle = 'rgba(0,0,0,.14)'; ctx.lineWidth = 1 * px; leafPath(); ctx.stroke();
+    ctx.restore();
+    // 탭 물결
+    for (let i = ripples.length - 1; i >= 0; i--) {
+      const r = ripples[i]; r.t += dt;
+      const k = r.t / 0.5;
+      if (k >= 1) { ripples.splice(i, 1); continue; }
+      ctx.globalAlpha = (1 - k) * 0.5; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(r.x, r.y, U * (0.25 + 0.9 * ease(k)), 0, TAU); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // ---------------- 무당벌레 ----------------
+  let lb = null;
+  const bug = { x: 0, y: 0, th: 0, v: 0, vT: 0, st: 'go', tm: 1, curve: 0, thT: 0, turnMax: 5, noEdge: 0,
+                peekPh: 0, flee: null, after: null, flinch: 0 };
+  function resize() {
+    const rel = W > 0 ? toLeaf(bug.x, bug.y) : null;      // 크기가 바뀌어도 잎 위 같은 자리에
+    W = stage.clientWidth; H = stage.clientHeight;
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const cs = getComputedStyle(document.documentElement);
+    leafCol = cs.getPropertyValue('--leaf').trim() || leafCol;
+    shade = cs.getPropertyValue('--shade').trim() || shade;
+    leaf.len = Math.min(W * 0.92, H * 1.12);
+    leaf.rot = W > H * 0.9 ? -0.3 : -1.15;          // 세로 화면이면 잎을 세워서
+    leaf.cx = W * 0.5 + Math.cos(leaf.rot) * leaf.len * 0.03; leaf.cy = H * 0.47;
+    U = clamp(leaf.len * 0.078, 20, 54);
+    if (rel) { const p = fromLeaf(rel.t, rel.v); bug.x = p.x; bug.y = p.y; }
+    if (lb) lb.size = U;
+  }
+  resize();
+  addEventListener('resize', resize);
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', resize);
+  lb = makeLadybug(stage, { size: U });
+  { const p = fromLeaf(0.4, 0.05); bug.x = p.x; bug.y = p.y; bug.th = rand(0, TAU); }
+  const dirOf = (th) => ({ x: Math.sin(th), y: -Math.cos(th) });      // th = 0 이면 화면 위쪽
+
+  function go(fast) {                  // 짧게 달리기
+    bug.st = 'go'; bug.tm = fast ? rand(0.7, 1.1) : rand(0.45, 1.7);
+    bug.vT = U * (fast ? rand(4.2, 5) : rand(1.7, 3.1));
+    bug.curve = rand(-0.7, 0.7);
+  }
+  function pause(sec) { bug.st = 'pause'; bug.tm = sec; lb.twitch(1.2); }
+  function pivot(to, then) {           // 제자리에서 홱 돌기
+    bug.st = 'pivot'; bug.thT = to; bug.turnMax = rand(4.5, 7.5); bug.after = then || null;
+  }
+  go();
+
+  stage.addEventListener('pointerdown', (e) => {
+    const d = Math.hypot(e.clientX - bug.x, e.clientY - bug.y);
+    ripples.push({ x: e.clientX, y: e.clientY, t: 0 });
+    if (d < Math.max(72, U * 3.2)) {
+      // 깜짝! → 죽은 척. 이미 죽은 척 중이면 조금 더 오래
+      if (bug.st === 'dead' || bug.st === 'wake') bug.tm = Math.max(bug.tm, 0) + rand(0.7, 1.1);
+      else bug.tm = rand(1.5, 2.6);
+      bug.st = 'dead'; bug.flinch = 1;
+      bug.flee = { x: e.clientX, y: e.clientY };
+    } else if (d < U * 7 && (bug.st === 'go' || bug.st === 'pause')) {
+      pause(rand(0.35, 0.7)); lb.alert = 3;         // 멀리서 톡 → 멈칫하고 경계만
+    }
+  });
+
+  loop((dt, t) => {
+    const b = bug;
+    b.tm -= dt; b.noEdge -= dt;
+    const d = dirOf(b.th);
+    let moved = 0, alert = 1, look = 0, tuckT = 0, foldT = 0;
+
+    if (b.st === 'go') {
+      b.v = damp(b.v, b.vT, 16, dt);
+      b.curve = damp(b.curve, 0, 0.8, dt) + rand(-1, 1) * 2.4 * dt;       // 살짝 휘는 경로
+      b.th += b.curve * dt;
+      const hx = b.x + d.x * U * 0.55, hy = b.y + d.y * U * 0.55;          // 머리 앞 한 점
+      if (b.noEdge <= 0 && edgeDist(hx, hy) < -U * 0.06) {
+        b.st = 'peek'; b.tm = rand(0.7, 1.2); b.peekPh = 0; lb.twitch(1.5);
+      } else if (b.tm <= 0) pause(Math.random() < 0.18 ? rand(0.9, 1.6) : rand(0.18, 0.7));
+    } else if (b.st === 'pause') {
+      b.v = damp(b.v, 0, 24, dt);
+      if (b.tm <= 0) {
+        lb.alert = 1;
+        if (Math.random() < 0.6) {
+          const big = Math.random() < 0.2;
+          pivot(b.th + (Math.random() < 0.5 ? -1 : 1) * (big ? rand(1.7, 2.6) : rand(0.35, 1.4)));
+        } else go();
+      }
+    } else if (b.st === 'pivot') {
+      b.v = damp(b.v, 0, 24, dt);
+      const diff = angDiff(b.th, b.thT);
+      const w = clamp(diff * 11, -b.turnMax, b.turnMax);
+      b.th += w * dt;
+      moved += Math.abs(w) * dt * U * 0.42;                                // 제자리에서도 발은 구름
+      if (Math.abs(diff) < 0.04) {
+        if (b.after) { const f = b.after; b.after = null; f(); }
+        else if (Math.random() < 0.35) pause(rand(0.1, 0.3)); else go();
+      }
+    } else if (b.st === 'peek') {
+      // 가장자리: 급정지 → 더듬이로 허공을 더듬고 머리를 좌우로 → 한 발 물러나 돌아섬
+      b.v = damp(b.v, b.tm < 0.28 ? -U * 0.9 : 0, 20, dt);
+      b.peekPh += dt;
+      alert = 3.4; look = 13 * Math.sin(b.peekPh * 7) * Math.min(1, b.peekPh * 3);
+      if (b.tm <= 0) {
+        const c = fromLeaf(rand(0.3, 0.7), rand(-0.07, 0.07));
+        b.noEdge = 0.5;
+        pivot(Math.atan2(c.x - b.x, -(c.y - b.y)) + rand(-0.5, 0.5), () => go());
+      }
+    } else if (b.st === 'dead') {
+      // 죽은 척: 그 자리에 굳음. 다리·더듬이는 몸 밑으로
+      b.v = 0; alert = 0; tuckT = 1; foldT = 1;
+      if (b.tm <= 0) { b.st = 'wake'; b.tm = rand(0.75, 1.0); }
+    } else if (b.st === 'wake') {
+      // 깨어남: 더듬이 먼저 슬쩍 → 다리 → 반대쪽으로 후다닥
+      b.v = 0; alert = 3;
+      tuckT = b.tm > 0.36 ? 1 : 0; foldT = 0;
+      if (b.tm <= 0) {
+        const away = b.flee ? Math.atan2(b.x - b.flee.x, -(b.y - b.flee.y)) + rand(-0.6, 0.6) : b.th + Math.PI;
+        b.noEdge = 0;
+        pivot(away, () => go(true));
+      }
+    }
+
+    // 이동 + 잎 밖으로 못 나가게 (머리만 살짝 넘고 몸은 안쪽)
+    b.x += d.x * b.v * dt; b.y += d.y * b.v * dt;
+    moved += b.v * dt;
+    const ed = edgeDist(b.x, b.y);
+    if (ed < U * 0.3) {
+      const c = fromLeaf(0.5, 0), dx = c.x - b.x, dy = c.y - b.y, l = Math.hypot(dx, dy) || 1;
+      const push = (U * 0.3 - ed) * Math.min(1, dt * 10);
+      b.x += dx / l * push; b.y += dy / l * push;
+    }
+
+    // 깜짝 놀란 순간: 몸이 움찔 작아졌다 돌아옴
+    b.flinch = damp(b.flinch, 0, 9, dt);
+    lb.tuck = damp(lb.tuck, tuckT, tuckT ? 40 : 9, dt);
+    lb.antFold = damp(lb.antFold, foldT, foldT ? 40 : 12, dt);
+    lb.look = damp(lb.look, look, 16, dt);
+    if (b.st !== 'pause') lb.alert = alert;
+    lb.size = U * (1 - 0.07 * b.flinch);
+    lb.shade = 1;
+    lb.x = b.x; lb.y = b.y; lb.heading = b.th * RAD;
+    lb.walk(moved * (b.v < 0 ? -1 : 1));
+    lb.update(dt);
+    drawLeaf(t, dt);
+    lb.render();
+  });
+</script>
+</body>
+</html>

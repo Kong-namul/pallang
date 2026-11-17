@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>풍뎅이 02 · 6다리 삼각 보행</title>
+<!-- 삼각 보행: (왼1·오2·왼3) 조와 (오1·왼2·오3) 조가 번갈아 딛고 민다.
+     디딘 발끝은 바닥 좌표에 못 박고 역운동학(IK)으로 다리 각도를 계산 → 몸이 지나가며 다리가 저절로 뒤로 젖혀짐.
+     걸음 빈도 = 속도 ÷ 보폭. 출발은 천천히, 멈춤은 빠르게. 멈추면 남은 발을 정리하고 더듬이를 씰룩. -->
+<link rel="stylesheet" href="../../assets/base.css">
+</head>
+<body>
+<canvas class="fill" id="ground"></canvas>
+<div class="stage" id="stage"></div>
+<p class="hint"><b>삼각 보행</b> · 디딘 발은 바닥에 붙고 몸만 지나가요</p>
+<label class="ui"><input type="checkbox" id="prints" checked> 발자국</label>
+
+<script src="../../assets/beetle.js"></script>
+<script>
+  const { makeBeetle, Gait, Spring, loop, makeNoise, clamp, lerp, rand, angDiff, RAD } = BT;
+  const stage = document.getElementById('stage');
+  const cv = document.getElementById('ground');
+  const ctx = cv.getContext('2d');
+  const toggle = document.getElementById('prints');
+  const tex = document.createElement('canvas');
+  let W = 0, H = 0, dpr = 1, ink = '#24302a';
+
+  // 바닥: 모래알·작은 돌 (한 번만 그려 두고 매 프레임 복사)
+  function paintGround() {
+    ink = getComputedStyle(document.documentElement).getPropertyValue('--ink').trim() || '#24302a';
+    tex.width = W * dpr; tex.height = H * dpr;
+    const t = tex.getContext('2d');
+    t.setTransform(dpr, 0, 0, dpr, 0, 0);
+    t.fillStyle = ink;
+    for (let i = 0; i < W * H / 260; i++) {
+      t.globalAlpha = rand(0.03, 0.1);
+      t.beginPath(); t.arc(rand(0, W), rand(0, H), rand(0.4, 1.3), 0, 6.283); t.fill();
+    }
+    for (let i = 0; i < 7; i++) {
+      const x = rand(0, W), y = rand(0, H), r = rand(4, 11) * Math.min(1.4, W / 500 + 0.4);
+      t.globalAlpha = 0.07;
+      t.beginPath(); t.ellipse(x + r * 0.25, y + r * 0.35, r, r * 0.75, 0.3, 0, 6.283); t.fill();
+      t.globalAlpha = 0.12;
+      t.beginPath(); t.ellipse(x, y, r, r * 0.72, rand(0, 3), 0, 6.283); t.fill();
+    }
+    t.globalAlpha = 1;
+  }
+  function resize() {
+    W = stage.clientWidth; H = stage.clientHeight; dpr = devicePixelRatio || 1;
+    cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    paintGround();
+  }
+  addEventListener('resize', resize); resize();
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', paintGround);
+
+  const scale = () => clamp(Math.min(W, H) / 300, 0.75, 1.9);
+  const b = makeBeetle(stage, { x: W * 0.45, y: H * 0.55, heading: rand(0, 360), scale: scale(), legShadow: true });
+  addEventListener('resize', () => { b.scale = scale(); });
+
+  // 발자국: 디딜 때마다 바닥 좌표에 점 하나
+  const prints = [];
+  const g = new Gait(b, { stride: 13, onPlant: (L, p) => prints.push({ x: p.x, y: p.y, age: 0 }) });
+
+  // 걷기 상태
+  let speed = 0, omega = 0;            // 몸 단위/초, 도/초
+  let cruise = rand(34, 52);
+  let pausing = true, pauseT = 0.8, nextPause = rand(4, 8);
+  const wanderN = makeNoise(0.13), speedN = makeNoise(0.3);
+  let look = 0, lookT = 0;              // 멈췄을 때 고개 돌리기
+
+  // 더듬이: 스프링 + 랜덤 목표 → "씰룩"
+  const ants = [0, 1].map(() => ({ a: new Spring(-62, 260, 16), b: new Spring(-16, 300, 15), fan: new Spring(0.35, 200, 14), next: 0 }));
+
+  loop((dt, t) => {
+    // 1) 속도: 가다 서다 (서는 건 빠르게, 출발은 천천히)
+    if (pausing) {
+      if ((pauseT -= dt) <= 0) { pausing = false; nextPause = rand(3.5, 8); cruise = rand(30, 56); }
+    } else if ((nextPause -= dt) <= 0) { pausing = true; pauseT = rand(1.1, 2.6); lookT = 0; }
+    const want = pausing ? 0 : cruise * (0.82 + 0.18 * speedN(t));
+    speed = lerp(speed, want, Math.min(1, dt * (want > speed ? 1.8 : 6)));
+
+    // 2) 방향: 느린 랜덤 + 가장자리 피하기. 빨리 갈수록 덜 꺾음
+    const m = Math.min(W, H) * 0.18;
+    let turn = wanderN(t) * 75;
+    const edge = Math.max(0, (m - b.x) / m, (b.x - (W - m)) / m, (m - b.y) / m, (b.y - (H - m)) / m);
+    if (edge > 0) turn += angDiff(b.heading / RAD, Math.atan2(W / 2 - b.x, -(H / 2 - b.y))) * RAD * edge * 3.2;
+    const moving = clamp(speed / 30, 0, 1);
+    omega = lerp(omega, clamp(turn, -130, 130) * (0.15 + 0.85 * moving), Math.min(1, dt * 3));
+    b.heading += omega * dt;
+
+    // 3) 이동: 바라보는 방향 = 가는 방향
+    const h = b.heading / RAD;
+    b.x += Math.sin(h) * speed * b.scale * dt;
+    b.y -= Math.cos(h) * speed * b.scale * dt;
+    g.step(dt, speed, omega);
+
+    // 4) 머리: 도는 쪽으로 먼저 고개, 멈추면 두리번
+    if (pausing && (lookT -= dt) <= 0) { look = rand(-9, 9); lookT = rand(0.4, 1); }
+    b.headYaw = lerp(b.headYaw, clamp(omega * 0.12, -7, 7) + (pausing ? look : 0), Math.min(1, dt * 7));
+
+    // 5) 더듬이: 멈추면 자주·크게 씰룩, 걸을 땐 앞으로 모으고 걸음에 맞춰 까딱
+    ants.forEach((A, i) => {
+      if ((A.next -= dt) <= 0) {
+        if (pausing) {
+          A.a.target = -62 + rand(-26, 20); A.b.target = rand(-38, 6); A.fan.target = rand(0.3, 1);
+          A.next = rand(0.12, 0.6);
+        } else {
+          A.a.target = -70 + rand(-8, 8); A.b.target = rand(-22, -8); A.fan.target = rand(0.2, 0.5);
+          A.next = rand(0.5, 1.4);
+        }
+      }
+      const bobA = Math.sin(g.phase * 6.283 * 2 + i) * 3 * moving;
+      b.ant[i].a = A.a.step(dt) + bobA; b.ant[i].b = A.b.step(dt); b.ant[i].fan = A.fan.step(dt);
+    });
+
+    b.render();
+
+    // 발자국 그리기
+    ctx.clearRect(0, 0, W, H);
+    ctx.drawImage(tex, 0, 0, W, H);
+    for (let i = prints.length - 1; i >= 0; i--) {
+      const p = prints[i];
+      p.age += dt;
+      if (p.age > 3.2) { prints.splice(i, 1); continue; }
+      if (!toggle.checked) continue;
+      ctx.globalAlpha = 0.45 * (1 - p.age / 3.2);
+      ctx.fillStyle = ink;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 1.1 + b.scale * 0.5, 0, 6.283); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  });
+</script>
+</body>
+</html>

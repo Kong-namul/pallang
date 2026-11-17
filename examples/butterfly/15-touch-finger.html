@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>나비 15 · 손끝에 앉기 (탑뷰)</title>
+<!-- 손(포인터)을 가만히 두면 나비가 다가와 손끝에 앉음. 탑뷰(tilt 0).
+     천천히 움직이면: 앉은 채 따라오며 균형 잡느라 날개를 퍼덕임
+     빠르게 움직이면: 놀라서 날아올랐다가, 다시 가만히 있으면 돌아옴
+     손이 없으면:   혼자 배회 (터치 기기에서는 누르고 있는 동안이 "손") -->
+<link rel="stylesheet" href="../../assets/butterfly.css">
+<style>
+  .stage { perspective: 700px; perspective-origin: 50% 50%; touch-action: none; }
+  .finger { position: absolute; left: 0; top: 0; width: 54px; height: 54px; margin: -27px 0 0 -27px; border-radius: 50%;
+            border: 1.5px dashed color-mix(in srgb, var(--ink) 35%, transparent);
+            background: color-mix(in srgb, var(--ink) 5%, transparent); opacity: 0; transition: opacity .25s; pointer-events: none; }
+  .finger.on { opacity: 1; }
+  .finger.calm { border-style: solid; border-color: #2f8f6a; }
+  .state { position: fixed; right: 12px; top: 10px; font: 12px ui-monospace, "JetBrains Mono", monospace; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="stage" id="stage"><div class="finger" id="finger"></div></div>
+<p class="hint">손을 <b>가만히</b> 두면 앉아요 · 휙 움직이면 날아가요</p>
+<div class="state" id="state"></div>
+
+<script src="../../assets/butterfly.js"></script>
+<script>
+  const { Butterfly, Flyer, loop, lerp, clamp, rand, ease } = BF;
+  const stage = document.getElementById('stage');
+  const finger = document.getElementById('finger');
+  const stateEl = document.getElementById('state');
+  let W = stage.clientWidth, H = stage.clientHeight;
+  addEventListener('resize', () => { W = stage.clientWidth; H = stage.clientHeight; });
+  const S = Math.min(1.15, W / 420, H / 320);
+
+  const b = new Butterfly(stage, { tilt: 0, shadowShift: 0.65, scale: S, x: W * 0.3, y: H * 0.4 });
+  const f = new Flyer(b, { speed: 75, maxSpeed: 220, margin: 50, arrive: 80 });
+
+  const ptr = { x: 0, y: 0, on: false, speed: 0, px: 0, py: 0, still: 0 };
+  const place = (e) => { ptr.x = e.clientX; ptr.y = e.clientY; };
+  stage.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse' || ptr.on) { place(e); ptr.on = true; } });
+  stage.addEventListener('pointerdown', (e) => { place(e); ptr.px = ptr.x; ptr.py = ptr.y; ptr.on = true; });
+  addEventListener('pointerup', (e) => { if (e.pointerType !== 'mouse') ptr.on = false; });
+  stage.addEventListener('pointerleave', () => { ptr.on = false; });
+
+  let state = '배회', t = 0, from = null, wary = 0;
+  const set = (s) => { state = s; t = 0; };
+
+  loop((dt) => {
+    t += dt;
+    const raw = Math.hypot(ptr.x - ptr.px, ptr.y - ptr.py) / Math.max(dt, 1e-3);
+    ptr.speed = lerp(ptr.speed, raw, 0.25); ptr.px = ptr.x; ptr.py = ptr.y;
+    ptr.still = ptr.on && ptr.speed < 40 ? ptr.still + dt : 0;        // 가만히 있은 시간
+    wary = Math.max(0, wary - dt);                                    // 놀란 뒤 잠깐은 안 다가옴
+    const calm = ptr.still > 0.7 && wary <= 0;
+    finger.style.transform = `translate(${ptr.x}px, ${ptr.y}px)`;
+    finger.classList.toggle('on', ptr.on);
+    finger.classList.toggle('calm', calm || state === '앉음');
+    const d = Math.hypot(ptr.x - b.x, ptr.y - b.y);
+
+    if (state === '배회') {
+      f.target = null; f.altOverride = null;
+      f.flee = ptr.on && ptr.speed > 250 ? { x: ptr.x, y: ptr.y, r: 130 } : null;   // 휘젓는 손은 피함
+      b.pitch = lerp(b.pitch, 12, dt * 3);
+      f.step(dt, W, H); b.update(dt);
+      if (calm) set('다가옴');
+    } else if (state === '다가옴') {
+      f.flee = null; f.target = { x: ptr.x, y: ptr.y };
+      f.altOverride = Math.min(70, 10 + d * 0.25);
+      f.step(dt, W, H); b.update(dt);
+      if (!ptr.on || ptr.speed > 320) { wary = 1.2; set('배회'); }
+      else if (d < 30) { from = { x: b.x, y: b.y, alt: b.alt }; set('내려앉음'); }
+    } else if (state === '내려앉음') {
+      const k = Math.min(1, t / 0.7), e = ease(k);
+      b.x = lerp(from.x, ptr.x, e); b.y = lerp(from.y, ptr.y, e); b.alt = lerp(from.alt, 6, e);
+      b.rate = lerp(3.2, 1.4, k); b.bank = lerp(b.bank, 0, dt * 6); b.pitch = lerp(b.pitch, 18, dt * 5);
+      b.update(dt);
+      if (!ptr.on || ptr.speed > 420) { takeoff(); }
+      else if (k >= 1) set('앉음');
+    } else if (state === '앉음') {
+      // 손끝을 살짝 늦게 따라감. 손이 움직이면 균형 잡느라 날개를 퍼덕이고 몸이 쏠림
+      const k = 1 - Math.exp(-dt * 14);
+      const vx = (ptr.x - b.x) * k, vy = (ptr.y - b.y) * k;
+      b.x += vx; b.y += vy;
+      const shake = clamp(ptr.speed / 260, 0, 1);
+      b.rest = lerp(b.rest, 1 - shake, Math.min(1, dt * 8));
+      b.rate = 1.6 + shake * 2; b.alt = lerp(b.alt, 6 + shake * 5, dt * 6);
+      b.bank = lerp(b.bank, clamp(vx / Math.max(dt, 1e-3) * 0.06, -22, 22), dt * 8);
+      b.pitch = lerp(b.pitch, 4, dt * 3);
+      b.heading += Math.sin(t * 0.8) * dt * 7;
+      b.update(dt);
+      if (!ptr.on || ptr.speed > 520) takeoff();
+    }
+    function takeoff() {
+      f.theta = ptr.on ? Math.atan2(b.y - ptr.y, b.x - ptr.x) + rand(-0.8, 0.8) : rand(0, 6.28);
+      f.v = 50; f.boost = ptr.on ? 1.5 : 0.5; f.altOverride = null; f.target = null;
+      b.rest = 0; wary = ptr.on ? 1.6 : 0;
+      set('배회');
+    }
+    b.render();
+    stateEl.textContent = state;
+  });
+</script>
+</body>
+</html>

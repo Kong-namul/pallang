@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>나비 04 · 꽃에 앉았다 날아가기</title>
+<link rel="stylesheet" href="../../assets/butterfly.css">
+<style>
+  .flower { position: absolute; width: 0; height: 0; transform-style: preserve-3d; }
+  .flower svg { position: absolute; left: -70px; top: -70px; width: 140px; height: 140px;
+                transform: rotateX(38deg); overflow: visible; }
+  .state { position: fixed; right: 12px; top: 10px; font-size: 12px; color: var(--muted);
+           font-family: ui-monospace, "JetBrains Mono", monospace; }
+</style>
+</head>
+<body>
+<div class="stage" id="stage">
+  <div class="flower" id="flower">
+    <svg viewBox="-70 -70 140 140" aria-hidden="true">
+      <g fill="#5d9b5a"><ellipse cx="-42" cy="30" rx="30" ry="11" transform="rotate(-28 -42 30)"/><ellipse cx="44" cy="26" rx="28" ry="10" transform="rotate(24 44 26)"/></g>
+      <g fill="#f3c6d6" stroke="#e39ab5" stroke-width="1">
+        <ellipse cx="0" cy="-30" rx="17" ry="30"/>
+        <ellipse cx="0" cy="-30" rx="17" ry="30" transform="rotate(60)"/>
+        <ellipse cx="0" cy="-30" rx="17" ry="30" transform="rotate(120)"/>
+        <ellipse cx="0" cy="-30" rx="17" ry="30" transform="rotate(180)"/>
+        <ellipse cx="0" cy="-30" rx="17" ry="30" transform="rotate(240)"/>
+        <ellipse cx="0" cy="-30" rx="17" ry="30" transform="rotate(300)"/>
+      </g>
+      <circle r="15" fill="#f2b632"/><circle r="9" fill="#e09a1c"/>
+    </svg>
+  </div>
+</div>
+<p class="hint">날아옴 → 내려앉음 → <b>쉬면서 날개 접었다 폈다</b> → 이륙</p>
+<div class="state" id="state"></div>
+
+<script src="../../assets/butterfly.js"></script>
+<script>
+  const { Butterfly, Flyer, loop, lerp, rand, ease, angDiff, RAD } = BF;
+  const stage = document.getElementById('stage');
+  const flowerEl = document.getElementById('flower');
+  const stateEl = document.getElementById('state');
+  let W, H; const F = { x: 0, y: 0 };
+  function layout() {
+    W = stage.clientWidth; H = stage.clientHeight;
+    F.x = W * 0.5; F.y = H * 0.6;
+    flowerEl.style.left = F.x + 'px'; flowerEl.style.top = F.y + 'px';
+  }
+  addEventListener('resize', layout); layout();
+
+  const b = new Butterfly(stage, { scale: Math.min(1.1, W / 480) });
+  const f = new Flyer(b, { speed: 85, edges: false, glides: false, arrive: 0 });
+
+  let state, t = 0, from, restFor;
+  function setState(s) { state = s; t = 0; stateEl.textContent = s; }
+
+  function enter() {
+    const side = Math.random() < 0.5 ? -1 : 1;
+    b.x = F.x + side * (W * 0.62);
+    b.y = F.y - H * rand(0.2, 0.45);
+    b.alt = 70; b.rest = 0; b.glide = 0;
+    f.target = { x: F.x, y: F.y };
+    f.theta = Math.atan2(F.y - b.y, F.x - b.x) + rand(-0.6, 0.6);
+    f.v = f.speed;
+    setState('날아오는 중');
+  }
+  enter();
+
+  loop((dt) => {
+    t += dt;
+    if (state === '날아오는 중') {
+      const d = Math.hypot(F.x - b.x, F.y - b.y);
+      f.altOverride = Math.min(70, 8 + d * 0.22);   // 가까워질수록 낮게
+      f.step(dt, W, H);
+      if (d < 34) { from = { x: b.x, y: b.y, alt: b.alt }; setState('내려앉는 중'); }
+    } else if (state === '내려앉는 중') {
+      const k = Math.min(1, t / 0.8), e = ease(k);
+      b.x = lerp(from.x, F.x, e); b.y = lerp(from.y, F.y, e);
+      b.alt = lerp(from.alt, 5, e);
+      b.rate = lerp(3.2, 1.3, k);                     // 착지 직전 빠르게 → 느리게
+      b.bank = lerp(b.bank, 0, dt * 6);
+      if (k >= 1) { restFor = rand(3.5, 5.5); setState('쉬는 중'); }
+    } else if (state === '쉬는 중') {
+      b.rest = Math.min(1, b.rest + dt * 2.5);
+      b.heading += Math.sin(t * 0.7) * dt * 8;         // 앉아서 살짝 몸 돌리기
+      if (t > restFor) { f.target = null; f.theta = rand(-2.6, -0.5); f.v = 25; f.boost = 1; setState('이륙'); }
+    } else if (state === '이륙') {
+      b.rest = Math.max(0, b.rest - dt * 7);
+      f.altOverride = Math.min(80, 5 + t * 70);
+      f.step(dt, W, H);
+      if (b.x < -120 || b.x > W + 120 || b.y < -120 || b.y > H + 120) enter();
+    }
+    b.update(dt); b.render();
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,87 @@
+/* ============================================================
+   나비 공용 스타일 — examples/butterfly/*.html 이 같이 씀
+   구조:  .bf > .bf-plane(기울어진 바닥면) > .bf-shadow + .bf-rig(몸+날개)
+   .bf--css 를 붙이면 JS 없이 CSS 키프레임만으로 날갯짓
+   ============================================================ */
+:root {
+  --sky-top: #dcebe3;
+  --sky-bot: #f5f0e2;
+  --ink: #24302a;
+  --muted: #5b6b62;
+  --shade: rgba(28, 48, 36, 0.26);
+}
+@media (prefers-color-scheme: dark) {
+  :root { --sky-top: #13201b; --sky-bot: #222c25; --ink: #e4ece6; --muted: #9db0a5; --shade: rgba(0, 0, 0, 0.45); }
+}
+html, body { height: 100%; margin: 0; }
+body {
+  background: linear-gradient(var(--sky-top), var(--sky-bot));
+  color: var(--ink);
+  font: 13px/1.45 "IBM Plex Sans KR", system-ui, sans-serif;
+  overflow: hidden;
+  -webkit-user-select: none; user-select: none;
+}
+.stage { position: fixed; inset: 0; perspective: 900px; perspective-origin: 50% 35%; overflow: hidden; }
+.hint {
+  position: fixed; left: 12px; bottom: 10px; margin: 0;
+  font-size: 12px; color: var(--muted); pointer-events: none;
+}
+.hint b { color: var(--ink); font-weight: 600; }
+.ui { position: fixed; right: 12px; bottom: 10px; font-size: 12px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+
+/* ---------- 나비 본체 ---------- */
+.bf {
+  position: absolute; left: 0; top: 0; width: 0; height: 0;
+  transform-style: preserve-3d;
+  --s: 1; --tilt: 38deg; --hue: 0deg; --alt: 40px; --heading: 0deg; --flap: 1.3s;
+}
+.bf-plane { position: absolute; transform-style: preserve-3d; transform: rotateX(var(--tilt)) scale(var(--s)); }
+.bf-rig { position: absolute; transform-style: preserve-3d; transform: translateZ(var(--alt)) rotateZ(var(--heading)); }
+/* 날개 한 장 = 세로로 자른 조각 10개가 경첩처럼 이어진 사슬 (span 안에 span, 각 span 에 --i:0~9).
+   첫 조각이 몸통 경첩에서 크게 돌고, 바깥 조각일수록 조금씩 늦게 따라와서 종이 넘기듯 휨.
+   (ykob/sketch-threejs 의 butterfly 셰이더 — 몸에서 먼 점일수록 늦게 따라오는 사인파 — 를 CSS로 옮긴 것, MIT)
+   왼쪽 날개는 오른쪽 날개를 통째로 좌우 반전(scaleX(-1))한 것 → 두 날개가 같은 키프레임을 씀 */
+.bf-wing { position: absolute; left: 0; top: -30px; width: 0; height: 65px; transform-style: preserve-3d; }
+.bf-wing--l { transform: scaleX(-1); }
+.bf-wing span {
+  position: absolute; left: 0; top: 0; width: 6px; height: 65px;
+  transform-origin: 0 50%; transform-style: preserve-3d;
+}
+.bf-wing span span { left: 6px; }
+.bf-wing span > i {
+  position: absolute; left: 0; top: 0; width: 6.6px; height: 65px;
+  background: url(wing.svg) calc(var(--i) * -6px) 0 / 60px 65px no-repeat;
+  filter: hue-rotate(var(--hue));
+}
+.bf-body {
+  position: absolute; left: -7.5px; top: -18px; width: 15px; height: 50px;
+  background: url(body.svg) center / contain no-repeat;
+  transform: translateZ(1.5px);
+}
+.bf-shadow {
+  position: absolute; left: -58px; top: -34px; width: 116px; height: 68px; border-radius: 50%;
+  background: radial-gradient(closest-side, var(--shade), transparent);
+}
+
+/* ---------- CSS 전용 날갯짓 (.bf--css) ----------
+   --flap = 한 번 내렸다 올리는 데 걸리는 시간. 사인파처럼 부드럽게 오르내림(alternate).
+   바깥 조각(--i 가 클수록)은 animation-delay 로 조금씩 늦게 → 날개 끝이 뒤따라오며 휨.
+   --bend = 조각 사이가 꺾이는 최대 각도 (0 이면 빳빳한 판).
+   4.4deg 는 butterfly.js 의 flex 0.14 와 같은 휨 정도 */
+.bf { --half: calc(var(--flap) / 2); --ease: cubic-bezier(.37, 0, .63, 1); --bend: 4.4deg; }
+.bf--css .bf-wing > span { animation: bf-flap var(--half) var(--ease) infinite alternate; }
+.bf--css .bf-wing span span {
+  animation: bf-bend var(--half) var(--ease) infinite alternate;
+  animation-delay: calc(var(--half) * (-0.5 + 0.031 * (var(--i) - 0.5)));
+}
+.bf--css .bf-rig     { animation: bf-lift   var(--half) var(--ease) infinite alternate; }
+.bf--css .bf-shadow  { animation: bf-shadow var(--half) var(--ease) infinite alternate; }
+
+@keyframes bf-flap   { from { transform: rotateY(-75deg); } to { transform: rotateY(15deg); } }   /* 위 75° ↔ 아래 15° */
+@keyframes bf-bend   { from { transform: rotateY(var(--bend)); } to { transform: rotateY(calc(var(--bend) * -1)); } }
+@keyframes bf-lift   { from { translate: 0 0 0; } to { translate: 0 0 7px; } }                    /* 내려칠 때 몸이 뜸 */
+@keyframes bf-shadow { from { transform: scaleX(.3); } to { transform: scaleX(1); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .bf { --flap: 2.6s; }
+}

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>나비 09 · 스크롤 따라 날기</title>
+<!-- CSS scroll-driven animation: animation-timeline: scroll() 로 스크롤 양 = 경로 진행도.
+     지원 안 하는 브라우저에서는 시간 기반으로 자동 재생 -->
+<link rel="stylesheet" href="../../assets/butterfly.css">
+<style>
+  body { overflow: auto; }
+  .canvas { position: fixed; left: 50%; top: 50%; width: 800px; height: 450px;
+            transform: translate(-50%, -50%); perspective: 900px; pointer-events: none; }
+  .bf {
+    --tilt: 20deg; --s: 1.1;
+    offset-path: path("M 90 400 C 260 380, 220 120, 400 140 S 640 380, 700 200 S 520 30, 400 60");
+    offset-rotate: auto 90deg;
+    animation: along 14s linear infinite;
+  }
+  @supports (animation-timeline: scroll()) {
+    .bf { animation: along linear both; animation-timeline: scroll(root block); }
+  }
+  @keyframes along { from { offset-distance: 0%; } to { offset-distance: 100%; } }
+  section { height: 100vh; display: grid; place-items: center; font-size: 14px; color: var(--muted); }
+  section b { color: var(--ink); }
+</style>
+</head>
+<body>
+<div class="canvas" id="canvas">
+  <div class="bf bf--css">
+    <div class="bf-plane"><div class="bf-shadow"></div><div class="bf-rig">
+      <div class="bf-wing bf-wing--l"><span style="--i:0"><i></i><span style="--i:1"><i></i><span style="--i:2"><i></i><span style="--i:3"><i></i><span style="--i:4"><i></i><span style="--i:5"><i></i><span style="--i:6"><i></i><span style="--i:7"><i></i><span style="--i:8"><i></i><span style="--i:9"><i></i></span></span></span></span></span></span></span></span></span></span></div><div class="bf-wing bf-wing--r"><span style="--i:0"><i></i><span style="--i:1"><i></i><span style="--i:2"><i></i><span style="--i:3"><i></i><span style="--i:4"><i></i><span style="--i:5"><i></i><span style="--i:6"><i></i><span style="--i:7"><i></i><span style="--i:8"><i></i><span style="--i:9"><i></i></span></span></span></span></span></span></span></span></span></span></div><div class="bf-body"></div>
+    </div></div>
+  </div>
+</div>
+<section><p>↓ <b>스크롤</b> 하면 나비가 따라 날아요</p></section>
+<section><p>스크롤 위치 = 경로 진행도</p></section>
+<section><p>거꾸로 올리면 뒤로 날아가요</p></section>
+<section><p>끝 🌼</p></section>
+<script>
+  const c = document.getElementById('canvas');
+  const fit = () => c.style.transform = `translate(-50%, -50%) scale(${Math.min(innerWidth / 800, innerHeight / 450)})`;
+  addEventListener('resize', fit); fit();
+</script>
+</body>
+</html>

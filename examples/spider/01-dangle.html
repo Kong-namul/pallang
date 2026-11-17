@@ -1,0 +1,384 @@
+<!doctype html>
+<!--
+  실 길이 = 스프링+댐퍼. 단, 실은 자유낙하보다 빨리 풀릴 수 없게 가속을 g로 제한 → 툭 떨어지다 출렁, 통통, 멈춤.
+  매달린 동안: 진자(실이 짧아지면 각운동량 보존으로 더 빨리 흔들림) + 비틀림 스프링(몸이 빙글 돌다 되감김).
+  다리 끝은 각자 스프링으로 자세를 따라가고 몸의 가속도를 반대로 받음 → 급정거하면 다리가 관성으로 휘청.
+  올라갈 땐 앞다리로 실을 번갈아 쥐고 당김: 당기는 순간에만 휙(ease-out) 오르고 짧게 멈춤 → 뚝뚝 끊기는 리듬.
+-->
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>거미 01 · 실 타고 내려오기</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  canvas.fill { touch-action: none; }
+</style>
+</head>
+<body>
+<canvas class="fill" id="cv"></canvas>
+<p class="hint">툭 떨어져 <b>출렁</b> · 빙글 돌다 다리로 당겨 올라감 · 포인터를 대면 <b>후다닥</b></p>
+
+<script src="../../assets/spider.js"></script>
+<script>
+  const { Spider, Gait, loop, fitCanvas, theme, onThemeChange, clamp, lerp, rand, ease, easeOut, follow, noise, angDiff, rgba, TAU, DEG, ABD_TIP, LX, LY } = SP;
+  const cv = document.getElementById('cv');
+  let th = theme();
+  let W = 0, H = 0, s = 12, sp = null, gait = null;
+  const view = fitCanvas(cv, (v) => {
+    W = v.W; H = v.H;
+    s = clamp(Math.min(W, H) * 0.05, 7, 24);
+    if (sp) reset();
+  });
+  const ctx = view.ctx;
+  onThemeChange(() => { th = theme(); if (sp) sp.theme = th; });
+
+  // ---------- 위쪽 나뭇가지 ----------
+  const twigY = (x) => Math.max(14, H * 0.07) + H * 0.012 * Math.sin((x / W) * 3.1 + 0.7) + (x / W - 0.5) * H * 0.015;
+  const walkY = (x) => twigY(x) + 1.55 * s;
+  let leaves = [];
+
+  // ---------- 상태 ----------
+  const st = {};
+  const feet = [];   // 매달린 동안 발끝 스프링 (로컬)
+  const body = { px: 0, py: 0, vx: 0, vy: 0, ax: 0, ay: 0 };
+  const ptr = { x: -1e4, y: -1e4, on: false };
+
+  function pickX() {
+    for (let k = 0; k < 16; k++) {
+      const x = rand(0.14, 0.86) * W;
+      if (Math.abs(x - sp.x) < W * 0.18) continue;
+      if (ptr.on && Math.abs(x - ptr.x) < W * 0.25) continue;
+      return x;
+    }
+    return clamp(W - sp.x, W * 0.14, W * 0.86);
+  }
+
+  function reset() {
+    sp = new Spider({ size: s, x: W * rand(0.3, 0.7), y: 0, heading: Math.random() < 0.5 ? 0 : Math.PI, alt: 1.5, theme: th });
+    sp.y = walkY(sp.x);
+    gait = new Gait(sp, { threshold: 0.6, maxLead: 0.36, stepTime: 0.16, lift: 0.45 });
+    leaves = [];
+    for (let k = 0, n = Math.max(3, Math.round(W / 140)); k < n; k++) {
+      leaves.push({ x: (k + rand(0.2, 0.8)) / n * W, a: rand(-0.9, 0.9) + Math.PI / 2, len: s * rand(1.6, 2.6), ph: rand(0, TAU) });
+    }
+    Object.assign(st, {
+      mode: 'walk', sub: 'go', pauseT: 0, goT: rand(0.8, 2), v: 0, omega: 0, k: 0,
+      goalX: clamp(sp.x + (sp.heading === 0 ? 1 : -1) * W * rand(0.08, 0.2), W * 0.12, W * 0.88),
+      ax: 0, ay: 0, L: 0, Lv: 0, Lacc: 0, stops: [], wait: 0, waitDur: 0.5,
+      th: 0, thV: 0, gustT: 3, tw: 0, twV: 0, twGoal: 0, twT: 2,
+      stretch: 0, stretchV: 0, rel: 0, relV: 0, relGoal: 0, fp: 0, E: [0, 0],
+      curl: 0.25, curlGoal: 0.25, holdLeg: 7, holdK: 0, flee: false,
+      pull: null, side: 1, lastDL: 0.55 * s, reachLeg: null, reachT: 2,
+      glint: rand(0, 2),
+    });
+  }
+
+  // ---------- 걷기(가지 아래) → 머리를 아래로 → 움츠렸다가 낙하 ----------
+  function walkStep(dt) {
+    let omega = 0;
+    const dx = st.goalX - sp.x;
+    if (st.sub === 'go') {
+      const diff = angDiff(sp.heading, dx > 0 ? 0 : Math.PI);
+      omega = clamp(diff * 5, -3.2, 3.2);
+      st.pauseT -= dt;
+      let want = 0;
+      if (st.pauseT < 0) {
+        want = Math.abs(diff) < 0.8 ? Math.min(5.5 * s, Math.abs(dx) * 2.4 + 0.5 * s) : 0;
+        if (st.pauseT < -st.goT) { st.pauseT = rand(0.2, 0.7); st.goT = rand(0.8, 2); } // 가다 서다
+      }
+      st.v += (want - st.v) * follow(want > st.v ? 7 : 12, dt);
+      if (Math.abs(dx) < 0.4 * s) st.sub = 'turn';
+    } else if (st.sub === 'turn') {
+      st.v += (0 - st.v) * follow(12, dt);
+      const diff = angDiff(sp.heading, Math.PI / 2);
+      omega = clamp(diff * 5, -3, 3);
+      if (Math.abs(diff) < 0.03 && gait.lifted === 0 && gait.idle > 0.25) { st.sub = 'prep'; st.k = 0; }
+    } else if (st.sub === 'prep') {
+      st.v = 0;
+      st.k += dt / 0.42;
+      if (st.k >= 1) { startDrop(); return; }
+    }
+    const ox = sp.x, oy = sp.y;
+    sp.x += Math.cos(sp.heading) * st.v * dt;
+    // 예비동작: 떨어지기 직전 가지 쪽으로 살짝 몸을 당김
+    const crouch = st.sub === 'prep' ? -0.2 * s * Math.sin(Math.PI * Math.min(1, st.k * 1.25)) : 0;
+    sp.y += (walkY(sp.x) + crouch - sp.y) * follow(st.sub === 'prep' ? 22 : 4, dt);
+    sp.heading += omega * dt;
+    st.omega = omega;
+    gait.update(dt, (sp.x - ox) / dt, (sp.y - oy) / dt, omega);
+    sp.alt = 1.5 + gait.bob / s;
+  }
+
+  function startDrop() {
+    const tip = sp.tipWorld();
+    st.ax = tip[0]; st.ay = tip[1];
+    st.L = 0; st.Lv = rand(0.5, 1.5) * s; st.th = 0; st.thV = rand(-0.08, 0.08);
+    st.tw = 0; st.twV = rand(-1.8, 1.8); st.twGoal = rand(-1.2, 1.2); st.twT = rand(2, 4);
+    st.rel = 0; st.relV = 0; st.relGoal = 0; st.flee = false;
+    const Lt = clamp(H * rand(0.38, 0.66), 4 * s, Math.max(4 * s, H - st.ay - 3.4 * s));
+    st.stops = Math.random() < 0.4 ? [Lt * rand(0.35, 0.55), Lt] : [Lt];
+    st.wait = 0; st.waitDur = rand(0.35, 0.8);
+    st.holdLeg = Math.random() < 0.5 ? 6 : 7; st.holdK = 0;
+    st.mode = 'drop'; st.curlGoal = -0.1;
+    feet.length = 0;
+    sp.legs.forEach((l) => feet.push({ x: l.f.x, y: l.f.y, z: l.f.z, vx: 0, vy: 0, vz: 0 }));
+    body.px = sp.x; body.py = sp.y; body.vx = 0; body.vy = 0; body.ax = 0; body.ay = 0;
+  }
+
+  function startClimb(flee) {
+    st.mode = 'flip'; st.flee = flee;
+    st.relGoal = (st.twV > 0 ? 1 : -1) * Math.PI;   // 돌던 방향으로 뒤집음
+    st.Lv = 0; st.pull = null; st.side = 1; st.pauseT = flee ? 0 : 0.15; st.lastDL = 0.55 * s;
+    st.curlGoal = 0.5;
+  }
+
+  function startle() {
+    st.flee = true; st.curlGoal = 1.05;   // 다리를 확 오므림
+    st.stretchV -= 3.5 * s;               // 몸이 움찔 위로
+    if (st.mode === 'drop' || st.mode === 'hang') { st.mode = 'startle'; st.startleT = rand(0.12, 0.2); st.stops = []; }
+  }
+
+  // ---------- 매달린 자세들 (로컬 px) ----------
+  function hangPose(i, t) {
+    const l = sp.legs[i], p = l.pair, g = l.side;
+    const curl = clamp(st.curl + 0.1 * noise(t * 0.45 + i * 5.3), -0.2, 1.1);
+    let a = [26, 60, 122, 156][p] * DEG + 0.12 * noise(t * 0.3 + i * 9.1);
+    let reach = l.len * s * (0.7 - 0.36 * curl) * (1 + 0.06 * noise(t * 0.55 + i * 2.2));
+    let z = -Math.max(0, curl) * 0.6 * s;
+    if (st.reachLeg && st.reachLeg.i === i) {           // 가끔 한 다리를 쭉 뻗어 더듬음
+      const e = Math.sin(Math.PI * clamp(st.reachLeg.k, 0, 1));
+      reach *= 1 + 0.18 * e; a += 0.25 * e * (p < 2 ? -1 : 1); z += 0.4 * s * e;
+    }
+    let x = l.hx * s + Math.cos(a) * reach;
+    let y = l.hy * s + g * Math.sin(a) * reach * (1 - 0.3 * curl);
+    if (i === st.holdLeg) {                             // 뒷다리 하나는 실을 잡고 내려옴
+      const k = st.holdK;
+      x = lerp(x, ABD_TIP * s - 0.45 * s, k); y = lerp(y, g * 0.06 * s, k); z = lerp(z, -0.1 * s, k);
+    }
+    return { x, y, z };
+  }
+
+  function climbPose(i, t) {
+    const l = sp.legs[i], p = l.pair, g = l.side, top = 1.6 * s;
+    if (p <= 1) {
+      const off = p === 0 ? 0 : -0.55 * s;   // 둘째 다리는 조금 아래를 잡음
+      const P = st.pull;
+      if (g === st.side) {
+        // 잡은 다리: 실 위 한 점을 꽉 쥠 → 몸이 오른 만큼 로컬에선 아래로 내려감
+        const pulled = P ? P.L0 - st.L : st.lastDL;
+        return { x: top + off - pulled, y: g * 0.05 * s, z: -0.1 * s };
+      }
+      // 반대 다리: 아래에서 위로 다시 뻗어 올림 (살짝 바깥으로 휘둘러 들어 올림)
+      if (!P) return { x: top + off, y: g * 0.05 * s, z: -0.1 * s };
+      const k = clamp(P.t, 0, 1), e = ease(k);
+      return { x: lerp(top + off - P.prevDL, top + off, e), y: g * (0.06 * s + 0.5 * s * Math.sin(Math.PI * k)), z: 0.35 * s * Math.sin(Math.PI * k) };
+    }
+    if (p === 2) return { x: -0.1 * s, y: g * 0.6 * s, z: -0.25 * s + 0.06 * s * noise(t * 3 + i) };
+    // 넷째 다리: 감은 실을 모으며 빙글빙글
+    const ph = t * (st.flee ? 18 : 9) + (g > 0 ? 0 : Math.PI);
+    return { x: -1.35 * s + 0.18 * s * Math.sin(ph), y: g * (0.3 * s + 0.1 * s * Math.cos(ph)), z: -0.25 * s };
+  }
+
+  // ---------- 매달린 동안 물리 ----------
+  function rigStep(dt, t) {
+    const near = ptr.on && Math.hypot(ptr.x - sp.x, ptr.y - sp.y) < Math.max(4.5 * s, 56);
+    if (near && !st.flee && st.mode !== 'top') startle();
+    const G = H * 1.7;
+
+    // 1) 실 길이
+    if (st.mode === 'drop') {
+      const tgt = st.stops[0], k = 140, c = 2 * 0.28 * Math.sqrt(k);
+      st.Lacc = Math.min(k * (tgt - st.L) - c * st.Lv, G);   // 자유낙하보다 빠를 순 없음
+      st.Lv += st.Lacc * dt; st.L += st.Lv * dt;
+      st.curlGoal = st.Lacc >= G * 0.98 ? -0.12 : 0.28;      // 떨어질 땐 다리를 쫙, 브레이크 걸리면 오므림
+      if (Math.abs(tgt - st.L) < 0.5 && Math.abs(st.Lv) < 4) {
+        st.wait += dt;
+        if (st.wait > st.waitDur) {
+          st.stops.shift(); st.wait = 0; st.waitDur = rand(0.35, 0.8);
+          if (!st.stops.length) { st.mode = 'hang'; st.hangT = rand(4, 7); }
+        }
+      }
+    } else if (st.mode === 'startle') {
+      st.Lv *= Math.exp(-14 * dt); st.L += st.Lv * dt;
+      if ((st.startleT -= dt) <= 0) startClimb(true);
+    } else if (st.mode === 'hang') {
+      st.Lv = 0; st.curlGoal = 0.25;
+      if ((st.hangT -= dt) <= 0) startClimb(false);
+      if ((st.reachT -= dt) <= 0) { st.reachT = rand(1.6, 3.5); st.reachLeg = { i: Math.floor(rand(0, 8)), k: 0, dur: rand(0.6, 1.1) }; }
+    } else if (st.mode === 'flip') {
+      if (Math.abs(st.rel - st.relGoal) < 0.18 && Math.abs(st.relV) < 2) st.mode = 'climb';
+    } else if (st.mode === 'climb') {
+      if (!st.pull) {
+        st.Lv = 0;
+        if ((st.pauseT -= dt) <= 0) {
+          const f = st.flee;
+          st.side = -st.side;
+          st.pull = { t: 0, dur: f ? 0.11 : rand(0.17, 0.26), L0: st.L, dL: s * (f ? rand(0.6, 0.8) : rand(0.42, 0.66)), prevDL: st.lastDL };
+          st.stretchV += s * (f ? 8 : 5);   // 당기는 순간 실이 '퉁' 늘어남
+        }
+      } else {
+        const P = st.pull;
+        P.t += dt / P.dur;
+        const Ln = Math.max(0.25 * s, P.L0 - P.dL * easeOut(P.t, 2.4));
+        st.Lv = (Ln - st.L) / dt; st.L = Ln;
+        if (P.t >= 1) {
+          st.lastDL = P.L0 - st.L; st.pull = null; st.Lv = 0;
+          st.pauseT = st.flee ? rand(0.01, 0.05) : Math.random() < 0.12 ? rand(0.5, 1) : rand(0.06, 0.2);
+        }
+      }
+      if (st.L <= 0.26 * s && !st.pull) { st.mode = 'top'; st.topT = st.flee ? 0.25 : rand(0.4, 0.9); }
+    } else if (st.mode === 'top') {
+      st.Lv = 0;
+      if ((st.topT -= dt) <= 0) { toWalk(); return; }
+    }
+    if (st.reachLeg) { st.reachLeg.k += dt / st.reachLeg.dur; if (st.reachLeg.k >= 1 || st.mode !== 'hang') st.reachLeg = null; }
+
+    // 2) 실의 탄성 (당길 때마다 출렁)
+    st.stretchV += (-st.stretch * 300 - st.stretchV * 7) * dt;
+    st.stretch += st.stretchV * dt;
+
+    // 3) 진자 — 실이 짧아지면 더 빨리 흔들림(-2·L'/L·θ')
+    const Lp = Math.max(st.L + 1.3 * s, 2 * s);
+    st.thV += (-(G / Lp) * Math.sin(st.th) - 0.22 * st.thV - 2 * (st.Lv / Lp) * st.thV) * dt;
+    st.th = clamp(st.th + st.thV * dt, -0.6, 0.6);
+    if ((st.gustT -= dt) <= 0) { st.gustT = rand(2.5, 6); st.thV += rand(-1, 1) * 0.16; }
+
+    // 4) 비틀림 — 실이 꼬였다 풀리며 몸이 빙글. 오를 땐 정면으로 되감음
+    const climbing = st.mode === 'flip' || st.mode === 'climb' || st.mode === 'top';
+    if (climbing) st.twGoal = Math.round(st.tw / TAU) * TAU;
+    else if ((st.twT -= dt) <= 0) { st.twT = rand(2, 5); st.twGoal += rand(-2.2, 2.2); }
+    const kt = climbing ? 9 : 2, ct = climbing ? 4.5 : 0.5;
+    st.twV += (kt * (st.twGoal - st.tw) - ct * st.twV) * dt;
+    st.tw += st.twV * dt;
+
+    // 5) 뒤집기 (머리 아래 ↔ 위) — 살짝 넘쳤다 돌아오는 스프링
+    const kf = st.flee ? 150 : 60, cf = st.flee ? 16 : 9;
+    st.relV += ((st.relGoal - st.rel) * kf - st.relV * cf) * dt;
+    st.rel += st.relV * dt;
+    st.fp = clamp(Math.abs(st.rel) / Math.PI, 0, 1);
+
+    // 6) 몸 위치: 실 끝(E)에 매달림. 붙는 점은 실젖 → 앞다리로 옮겨감
+    const dx = Math.sin(st.th), dy = Math.cos(st.th), Lvis = st.L + st.stretch;
+    const Ex = st.ax + dx * Lvis, Ey = st.ay + dy * Lvis;
+    const oh = sp.heading;
+    sp.heading = Math.atan2(dy, dx) + st.rel;
+    sp.twist = st.tw;
+    const attach = lerp(ABD_TIP * s, 1.6 * s, ease(st.fp));
+    sp.x = Ex - Math.cos(sp.heading) * attach; sp.y = Ey - Math.sin(sp.heading) * attach;
+    st.E = [Ex, Ey];
+    st.omega = angDiff(oh, sp.heading) / dt;
+
+    // 7) 몸 가속도 → 다리 관성
+    const vx = (sp.x - body.px) / dt, vy = (sp.y - body.py) / dt;
+    body.ax += (clamp((vx - body.vx) / dt, -6000, 6000) - body.ax) * follow(30, dt);
+    body.ay += (clamp((vy - body.vy) / dt, -6000, 6000) - body.ay) * follow(30, dt);
+    body.vx = vx; body.vy = vy; body.px = sp.x; body.py = sp.y;
+
+    st.curl += (st.curlGoal - st.curl) * follow(st.flee ? 16 : 3, dt);
+    const holding = st.mode === 'drop' || st.mode === 'hang';
+    st.holdK += ((holding ? 1 : 0) - st.holdK) * follow(holding ? 2.5 : 10, dt);
+
+    // 8) 다리 끝 스프링
+    const tight = st.mode === 'climb' || st.mode === 'top';
+    const K = tight ? 420 : st.flee ? 320 : 120, C = tight ? 34 : st.flee ? 30 : 15;
+    const ch = Math.cos(sp.heading), sh = Math.sin(sp.heading);
+    const alx = body.ax * ch + body.ay * sh, aly = -body.ax * sh + body.ay * ch, inert = 0.3;
+    const cb = clamp((st.fp - 0.3) / 0.6, 0, 1);
+    for (let i = 0; i < 8; i++) {
+      const a = hangPose(i, t), b = climbPose(i, t), f = feet[i], l = sp.legs[i];
+      const tx = lerp(a.x, b.x, cb), ty = lerp(a.y, b.y, cb), tz = lerp(a.z, b.z, cb);
+      f.vx += ((tx - f.x) * K - f.vx * C - alx * inert) * dt;
+      f.vy += ((ty - f.y) * K - f.vy * C - aly * inert) * dt;
+      f.vz += ((tz - f.z) * K - f.vz * C) * dt;
+      f.x += f.vx * dt; f.y += f.vy * dt; f.z += f.vz * dt;
+      l.f.x = f.x; l.f.y = f.y; l.f.z = f.z; l.lift = clamp(f.z / (0.5 * s), 0, 1);
+    }
+    sp.alt = 1.5;
+  }
+
+  function toWalk() {
+    sp.twist = 0; st.tw = 0; st.twV = 0;
+    gait.plantFromLegs();
+    st.mode = 'walk'; st.sub = 'go'; st.v = 0; st.pauseT = st.flee ? 0 : rand(0.2, 0.5); st.goT = rand(0.8, 2);
+    st.goalX = pickX(); st.flee = false;
+  }
+
+  // ---------- 그리기 ----------
+  function drawTwig(t) {
+    const col = th.dark ? [118, 96, 72] : [112, 88, 64], lw = Math.max(3, s * 0.38);
+    const path = (ox, oy) => { ctx.beginPath(); for (let x = -20; x <= W + 20; x += 14) ctx.lineTo(x + ox, twigY(x) + oy); };
+    ctx.lineCap = 'round';
+    path(LX * s * 1.2, LY * s * 1.2); ctx.strokeStyle = rgba(th.shade, th.shade[3] * 0.8); ctx.lineWidth = lw; ctx.stroke();
+    for (const L of leaves) drawLeaf(L, t, true);
+    path(0, 0); ctx.strokeStyle = rgba(col); ctx.lineWidth = lw; ctx.stroke();
+    path(0, -lw * 0.22); ctx.strokeStyle = 'rgba(255,255,255,0.13)'; ctx.lineWidth = lw * 0.3; ctx.stroke();
+    for (const L of leaves) drawLeaf(L, t, false);
+  }
+  function drawLeaf(L, t, shadow) {
+    const x0 = L.x, y0 = twigY(L.x), a = L.a + 0.06 * Math.sin(t * 0.9 + L.ph), len = L.len;
+    const ox = shadow ? LX * s * 1.3 : 0, oy = shadow ? LY * s * 1.3 : 0;
+    const ca = Math.cos(a), sa = Math.sin(a), w = len * 0.32;
+    const tip = [x0 + ca * len + ox, y0 + sa * len + oy], b = [x0 + ox, y0 + oy];
+    ctx.beginPath();
+    ctx.moveTo(b[0], b[1]);
+    ctx.quadraticCurveTo(b[0] + ca * len * 0.5 - sa * w, b[1] + sa * len * 0.5 + ca * w, tip[0], tip[1]);
+    ctx.quadraticCurveTo(b[0] + ca * len * 0.5 + sa * w, b[1] + sa * len * 0.5 - ca * w, b[0], b[1]);
+    ctx.fillStyle = shadow ? rgba(th.shade, th.shade[3] * 0.7) : rgba(th.leaf, 0.9);
+    ctx.fill();
+    if (!shadow) {
+      ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.moveTo(b[0], b[1]); ctx.lineTo(tip[0], tip[1]); ctx.stroke();
+    }
+  }
+
+  function drawThread(t) {
+    const tip = sp.tipWorld(), fp = st.fp;
+    const ex = lerp(tip[0], st.E[0], fp), ey = lerp(tip[1], st.E[1], fp);
+    const o = sp.alt * s;
+    ctx.lineCap = 'round';
+    // 벽에 비친 실 그림자
+    ctx.strokeStyle = rgba(th.shade, th.shade[3] * 0.55); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(st.ax + LX * o * 0.3, st.ay + LY * o * 0.3); ctx.lineTo(ex + LX * o, ey + LY * o); ctx.stroke();
+    // 실
+    ctx.strokeStyle = rgba(th.ink, th.dark ? 0.5 : 0.42); ctx.lineWidth = 0.9;
+    ctx.beginPath(); ctx.moveTo(st.ax, st.ay); ctx.lineTo(ex, ey); ctx.stroke();
+    // 빛 한 점이 실을 타고 미끄러짐
+    const g = (t * 0.22 + st.glint) % 1.8;
+    if (g < 1) {
+      const a0 = Math.max(0, g - 0.05), a1 = Math.min(1, g + 0.05);
+      ctx.strokeStyle = `rgba(255,255,255,${(0.75 * Math.sin(Math.PI * g)).toFixed(3)})`; ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.moveTo(lerp(st.ax, ex, a0), lerp(st.ay, ey, a0)); ctx.lineTo(lerp(st.ax, ex, a1), lerp(st.ay, ey, a1)); ctx.stroke();
+    }
+    // 오를 때: 감아 올린 실 뭉치가 배 끝에 대롱
+    if (fp > 0.5) {
+      const a = (fp - 0.5) * 2, w = Math.sin(t * 3) * 0.25 * s;
+      ctx.strokeStyle = rgba(th.ink, 0.32 * a); ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.moveTo(tip[0], tip[1]);
+      ctx.bezierCurveTo(tip[0] + 0.7 * s + w, tip[1] + 1.1 * s, tip[0] - 0.6 * s + w, tip[1] + 1.2 * s, tip[0] - 0.15 * s, tip[1] + 0.35 * s);
+      ctx.stroke();
+    }
+  }
+
+  // ---------- 입력 ----------
+  const setPtr = (e) => { ptr.x = e.clientX; ptr.y = e.clientY; ptr.on = true; };
+  cv.addEventListener('pointermove', setPtr);
+  cv.addEventListener('pointerdown', setPtr);
+  cv.addEventListener('pointerleave', () => { ptr.on = false; });
+  cv.addEventListener('pointercancel', () => { ptr.on = false; });
+  cv.addEventListener('pointerup', (e) => { if (e.pointerType !== 'mouse') ptr.on = false; });
+
+  reset();
+  loop((dt, t) => {
+    if (dt > 0) {
+      if (st.mode === 'walk') walkStep(dt); else rigStep(dt, t);
+      sp.update(dt, st.omega);
+    }
+    ctx.clearRect(0, 0, W, H);
+    drawTwig(t);
+    if (st.mode !== 'walk') drawThread(t);
+    sp.draw(ctx, th);
+  });
+</script>
+</body>
+</html>

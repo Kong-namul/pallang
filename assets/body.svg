@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="60" height="200" viewBox="0 0 30 100">
+  <!-- 더듬이 -->
+  <g fill="none" stroke="#1D1712" stroke-width="0.9" stroke-linecap="round">
+    <path d="M13.5 20 C11 12 7 6 4 3"/>
+    <path d="M16.5 20 C19 12 23 6 26 3"/>
+  </g>
+  <circle cx="4" cy="3" r="1.6" fill="#1D1712"/>
+  <circle cx="26" cy="3" r="1.6" fill="#1D1712"/>
+  <!-- 머리, 가슴, 배 -->
+  <circle cx="15" cy="22" r="4.2" fill="#241C16"/>
+  <ellipse cx="15" cy="36" rx="5.2" ry="10" fill="#2B221B"/>
+  <ellipse cx="15" cy="66" rx="3.6" ry="24" fill="#2B221B"/>
+  <g stroke="#4A3B2F" stroke-width="0.7">
+    <path d="M11.6 52 H18.4 M11.5 58 H18.5 M11.6 64 H18.4 M11.8 70 H18.2 M12.2 76 H17.8 M12.8 82 H17.2"/>
+  </g>
+  <circle cx="13.4" cy="21" r="0.9" fill="#6B5A4A"/>
+  <circle cx="16.6" cy="21" r="0.9" fill="#6B5A4A"/>
+</svg>

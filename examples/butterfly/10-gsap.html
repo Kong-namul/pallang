@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>나비 10 · GSAP 경로 연출</title>
+<!-- GSAP MotionPathPlugin: SVG 경로에 맞춰 이동 + 진행 방향 자동 회전.
+     속도(timeScale)와 잔떨림을 랜덤 값으로 계속 바꿔서 기계적인 느낌을 없앰 -->
+<link rel="stylesheet" href="../../assets/butterfly.css">
+<style>
+  .route { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .route path { fill: none; stroke: var(--muted); stroke-opacity: .35; stroke-width: 1.5; stroke-dasharray: 4 7; }
+  .route.off path { stroke-opacity: 0; }
+  .bf { --tilt: 24deg; }
+  .bf-jit { position: absolute; transform-style: preserve-3d; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <svg class="route" id="routeSvg" viewBox="0 0 800 450" preserveAspectRatio="xMidYMid slice">
+    <path id="route" d="M 120 300 C 60 200, 160 90, 280 120 S 420 300, 540 250 S 730 70, 690 200 S 560 400, 400 360 S 180 400, 120 300 Z"/>
+  </svg>
+  <div class="bf bf--css" id="bf">
+    <div class="bf-jit">
+      <div class="bf-plane"><div class="bf-shadow"></div><div class="bf-rig">
+        <div class="bf-wing bf-wing--l"><span style="--i:0"><i></i><span style="--i:1"><i></i><span style="--i:2"><i></i><span style="--i:3"><i></i><span style="--i:4"><i></i><span style="--i:5"><i></i><span style="--i:6"><i></i><span style="--i:7"><i></i><span style="--i:8"><i></i><span style="--i:9"><i></i></span></span></span></span></span></span></span></span></span></span></div><div class="bf-wing bf-wing--r"><span style="--i:0"><i></i><span style="--i:1"><i></i><span style="--i:2"><i></i><span style="--i:3"><i></i><span style="--i:4"><i></i><span style="--i:5"><i></i><span style="--i:6"><i></i><span style="--i:7"><i></i><span style="--i:8"><i></i><span style="--i:9"><i></i></span></span></span></span></span></span></span></span></span></span></div><div class="bf-body"></div>
+      </div></div>
+    </div>
+  </div>
+</div>
+<p class="hint"><b>gsap.to(motionPath)</b> + 랜덤 속도·잔떨림</p>
+<label class="ui"><input type="checkbox" id="showRoute" checked> 경로 보기</label>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/MotionPathPlugin.min.js"></script>
+<script>
+  gsap.registerPlugin(MotionPathPlugin);
+
+  const fly = gsap.to('#bf', {
+    duration: 16, repeat: -1, ease: 'none',
+    motionPath: { path: '#route', align: '#route', alignOrigin: [0.5, 0.5], autoRotate: 90 },
+  });
+
+  // 속도가 1.5초마다 0.6~1.5배 사이로 바뀜
+  gsap.to(fly, { timeScale: 'random(0.6, 1.5)', duration: 1.5, ease: 'sine.inOut', repeat: -1, repeatRefresh: true });
+
+  // 잔떨림
+  gsap.to('.bf-jit', { x: 'random(-9, 9)', y: 'random(-7, 7)', duration: 0.65, ease: 'sine.inOut', repeat: -1, repeatRefresh: true });
+
+  // 창 크기가 바뀌면 경로 정렬 다시 계산
+  addEventListener('resize', () => { const p = fly.progress(); fly.invalidate().progress(p); });
+
+  document.getElementById('showRoute').addEventListener('change', (e) => {
+    document.getElementById('routeSvg').classList.toggle('off', !e.target.checked);
+  });
+</script>
+</body>
+</html>

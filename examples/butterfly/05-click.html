@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>나비 05 · 클릭한 곳으로</title>
+<!-- 클릭 → 그쪽으로 몸을 돌리며 날아가 맴돔. 멀수록 빨리, 돌 때 몸 기울임
+     기법 참고: michaelbromley/css-experiments (css-3d-butterfly) 의 클릭 이동 아이디어 -->
+<link rel="stylesheet" href="../../assets/butterfly.css">
+<style>
+  .stage { cursor: crosshair; }
+  .ping { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%;
+          border: 2px solid #d9631e; animation: ping .9s ease-out forwards; pointer-events: none; }
+  @keyframes ping { from { transform: scale(.3); opacity: 1; } to { transform: scale(3.2); opacity: 0; } }
+</style>
+</head>
+<body>
+<div class="stage" id="stage"></div>
+<p class="hint">화면 아무 데나 <b>클릭</b></p>
+
+<script src="../../assets/butterfly.js"></script>
+<script>
+  const { Butterfly, Flyer, loop } = BF;
+  const stage = document.getElementById('stage');
+  let W = stage.clientWidth, H = stage.clientHeight;
+  addEventListener('resize', () => { W = stage.clientWidth; H = stage.clientHeight; });
+
+  const b = new Butterfly(stage, { x: W * 0.5, y: H * 0.55, scale: Math.min(1.1, W / 480) });
+  const f = new Flyer(b, { speed: 60, maxSpeed: 260, arrive: 70, margin: 30 });
+  f.target = { x: W * 0.5, y: H * 0.5 };
+
+  stage.addEventListener('pointerdown', (e) => {
+    f.target = { x: e.clientX, y: e.clientY };
+    const p = document.createElement('div');
+    p.className = 'ping'; p.style.left = e.clientX + 'px'; p.style.top = e.clientY + 'px';
+    stage.appendChild(p); setTimeout(() => p.remove(), 900);
+  });
+
+  loop((dt) => { f.step(dt, W, H); b.update(dt); b.render(); });
+</script>
+</body>
+</html>

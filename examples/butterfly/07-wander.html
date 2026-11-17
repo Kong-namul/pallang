@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>나비 07 · 자유 배회</title>
+<link rel="stylesheet" href="../../assets/butterfly.css">
+<style>
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="trail"></canvas>
+<div class="stage" id="stage"></div>
+<p class="hint">아무 규칙 없이 <b>자유롭게</b> 배회 · 가끔 활공</p>
+<label class="ui"><input type="checkbox" id="showTrail" checked> 경로 보기</label>
+
+<script src="../../assets/butterfly.js"></script>
+<script>
+  const { Butterfly, Flyer, loop } = BF;
+  const stage = document.getElementById('stage');
+  const cv = document.getElementById('trail');
+  const ctx = cv.getContext('2d');
+  const toggle = document.getElementById('showTrail');
+  let W = 0, H = 0;
+  function resize() {
+    W = stage.clientWidth; H = stage.clientHeight;
+    const dpr = devicePixelRatio || 1;
+    cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  addEventListener('resize', resize); resize();
+
+  const b = new Butterfly(stage, { x: W * 0.3, y: H * 0.6, scale: Math.min(1.25, W / 520) });
+  const f = new Flyer(b, { speed: Math.max(55, W / 9), margin: Math.min(90, W * 0.15) });
+
+  const pts = [];
+  loop((dt) => {
+    f.step(dt, W, H);
+    b.update(dt);
+    b.render();
+    // 경로: 최근 위치를 점으로
+    pts.push({ x: b.x, y: b.y, g: b.glide > 0.5 });
+    if (pts.length > 240) pts.shift();
+    ctx.clearRect(0, 0, W, H);
+    if (toggle.checked) {
+      pts.forEach((p, i) => {
+        ctx.globalAlpha = (i / pts.length) * 0.55;
+        ctx.fillStyle = p.g ? '#2f8f6a' : '#d9631e';
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.g ? 2.2 : 1.5, 0, 6.283); ctx.fill();
+      });
+      ctx.globalAlpha = 1;
+    }
+  });
+</script>
+</body>
+</html>

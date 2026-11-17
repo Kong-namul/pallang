@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  잠자리 04 · 갈대 끝에 앉은 잠자리 (터치 반응)
+  앉아 있을 땐 날개를 앞·아래로 숙인 휴식 자세 + 바람에 갈대째 흔들림 + 가끔 날개 움찔 + 머리를 '툭툭' 끊어 돌리며 주변 살핌.
+  포인터가 근처를 돌면 머리(최대 ±40°)·몸이 따라 돌고, 빠르게 다가오면 날개를 들며 움찔(예비동작).
+  직접 닿으면 0.2초 만에 포인터 반대쪽으로 다트 → 떨어진 곳에서 포인터를 바라보며 정지비행 → 같은 갈대 끝으로 돌아와
+  내려앉음(갈대가 출렁, 날개가 살짝 넘치며 휴식 자세로). pointer 이벤트라 마우스·터치 모두 동작.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>잠자리 04 · 갈대 끝 터치 반응</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  .stage { touch-action: none; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas class="fill" id="reeds"></canvas>
+<div class="stage" id="stage"></div>
+<p class="hint">근처에서 포인터를 돌려 보고, <b>직접 건드려</b> 보세요</p>
+
+<script src="../../assets/dragonfly.js"></script>
+<script>
+  const { makeDragonfly, loop, clamp, lerp, rand, wobble, angDiffDeg, easeOutQuart, easeOutBack, ease, RAD } = DF;
+  const stage = document.getElementById('stage');
+  const cv = document.getElementById('reeds');
+  const ctx = cv.getContext('2d');
+  let W = 0, H = 0, K = 0, S = 0;
+
+  const d = makeDragonfly(stage, { hue: 8, rate: 30, alt: 30 });
+  const PERCH_ALT = 30, FLY_ALT = 52;
+  const REST = { fore: -24, hind: -20, foreSweep: -13, hindSweep: -9 };   // 휴식 자세: 앞·아래로 숙인 날개
+
+  /* ---------- 갈대 ---------- */
+  let perchBase = { x: 0, y: 0 }, perchTip = { x: 0, y: 0 }, others = [];
+  const reedWind = wobble(0.55);
+  const tipSpring = { x: 0, y: 0, vx: 0, vy: 0 };   // 앉고 떠날 때 갈대 끝이 출렁
+  function resize() {
+    W = stage.clientWidth; H = stage.clientHeight; S = Math.min(W, H);
+    const dpr = devicePixelRatio || 1;
+    cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const k = clamp(S / 520, 0.45, 1.1);
+    if (Math.abs(k - K) > 0.01) { K = k; d.setSize(K); }
+    perchBase = { x: W * 0.36, y: H + 10 };
+    perchTip = { x: W * 0.52, y: H * 0.5 };
+    others = [[0.18, 0.62, 0.9], [0.27, 0.72, 2.2], [0.7, 0.66, 4.0], [0.84, 0.58, 5.3], [0.6, 0.8, 1.4]]
+      .map(([x, y, p]) => ({ bx: W * (x - 0.08), tx: W * x, ty: H * y, p }));
+  }
+  addEventListener('resize', resize); resize();
+
+  function windAt(t, p) { return (reedWind(t + p) * 6 + Math.sin(t * 1.7 + p * 2) * 1.5) * K; }
+  function tipNow(t) {
+    return { x: perchTip.x + windAt(t, 0) + tipSpring.x, y: perchTip.y + windAt(t * 0.8, 3) * 0.4 + tipSpring.y };
+  }
+
+  function drawReed(bx, by, tx, ty, alt, w, alpha) {
+    // 그림자(땅에 닿은 밑동은 0, 끝은 높이만큼 오른쪽 아래로) → 줄기
+    const sx = alt * 0.42, sy = alt * 0.7;
+    const mx = lerp(bx, tx, 0.55) - (ty - by) * 0.06, my = lerp(by, ty, 0.55);
+    ctx.lineCap = 'round';
+    ctx.globalAlpha = 0.5; ctx.strokeStyle = shade; ctx.lineWidth = w * 0.9;
+    ctx.beginPath(); ctx.moveTo(bx, by); ctx.quadraticCurveTo(mx + sx * 0.5, my + sy * 0.5, tx + sx, ty + sy); ctx.stroke();
+    ctx.globalAlpha = alpha; ctx.strokeStyle = leaf; ctx.lineWidth = w;
+    ctx.beginPath(); ctx.moveTo(bx, by); ctx.quadraticCurveTo(mx, my, tx, ty); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  let leaf = '', shade = '';
+  const readColors = () => { const s = getComputedStyle(document.documentElement); leaf = s.getPropertyValue('--leaf').trim(); shade = s.getPropertyValue('--shade').trim(); };
+  readColors();
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', readColors);
+
+  /* ---------- 포인터 ---------- */
+  const ptr = { x: 0, y: 0, vx: 0, vy: 0, on: false, t: 0 };
+  stage.addEventListener('pointermove', (e) => {
+    const now = performance.now() / 1000, dt = Math.max(0.008, now - ptr.t);
+    if (ptr.on) { ptr.vx = lerp(ptr.vx, (e.clientX - ptr.x) / dt, 0.4); ptr.vy = lerp(ptr.vy, (e.clientY - ptr.y) / dt, 0.4); }
+    ptr.x = e.clientX; ptr.y = e.clientY; ptr.t = now; ptr.on = true;
+  });
+  stage.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') ptr.on = false; });
+  stage.addEventListener('pointerdown', (e) => {
+    ptr.x = e.clientX; ptr.y = e.clientY; ptr.on = true; ptr.vx = ptr.vy = 0; ptr.t = performance.now() / 1000;
+    if (hitTest(e.clientX, e.clientY)) flee();
+    else if (Math.hypot(e.clientX - d.x, e.clientY - d.y) < 160 * K) flinch(1);
+  });
+  stage.addEventListener('pointerup', (e) => { if (e.pointerType !== 'mouse') ptr.on = false; });
+
+  // 몸(머리~배 끝 선분) 또는 날개 범위 안을 눌렀는지
+  function hitTest(px, py) {
+    const k = K * d.depthScale();
+    const hr = d.heading / RAD, fx = Math.sin(hr), fy = -Math.cos(hr);
+    const ax = d.x + fx * 36 * k, ay = d.y + fy * 36 * k;           // 머리
+    const tip = d.tipPoint();
+    const vx = tip.x - ax, vy = tip.y - ay, L2 = vx * vx + vy * vy;
+    const u = clamp(((px - ax) * vx + (py - ay) * vy) / L2, 0, 1);
+    const dBody = Math.hypot(px - (ax + vx * u), py - (ay + vy * u));
+    const dWing = Math.hypot(px - d.x, py - d.y);
+    return dBody < 16 * k + 8 || dWing < 52 * k;
+  }
+
+  /* ---------- 상태 ---------- */
+  let mode = 'perch', modeT = 0, plan = null;
+  let restMix = 1;                   // 1 = 휴식 자세 날개, 0 = 날갯짓
+  let flinchAmt = 0;                 // 움찔(날개 들기) 정도
+  let twitch = { t: 9, next: rand(2.5, 6) };
+  const perchHeading = 18;
+  d.heading = perchHeading;
+  const head = { yaw: 0, goal: 0, next: 0.5 };
+  const wx = wobble(1.1), wy = wobble(0.9), wa = wobble(0.4), wb = wobble(0.7);
+  const setMode = (m) => { mode = m; modeT = 0; };
+
+  function flinch(a) { flinchAmt = Math.max(flinchAmt, a); }
+
+  function flee() {
+    if (mode === 'flee') return;
+    // 포인터 반대쪽 ±40° 안에서 화면 안에 들어오는 곳을 고름
+    const m = Math.max(60 * K, S * 0.12);
+    const away = Math.atan2(d.y - ptr.y, d.x - ptr.x);
+    let tx = 0, ty = 0, ok = false;
+    for (let i = 0; i < 16 && !ok; i++) {
+      const a = away + rand(-0.7, 0.7) * (1 + i * 0.15), dist = rand(0.28, 0.42) * S;
+      tx = d.x + Math.cos(a) * dist; ty = d.y + Math.sin(a) * dist;
+      ok = tx > m && tx < W - m && ty > m && ty < H - m;
+    }
+    if (!ok) { tx = clamp(tx, m, W - m); ty = clamp(ty, m, H - m); }
+    const wasPerched = mode === 'perch' || mode === 'land';
+    plan = { sx: d.x, sy: d.y, dx: tx - d.x, dy: ty - d.y, h0: d.heading,
+             h1: Math.atan2(ty - d.y, tx - d.x) * RAD + 90, dur: rand(0.19, 0.25), wind: wasPerched ? 0.06 : 0.03, over: 0.04 };
+    if (wasPerched) { tipSpring.vx += -plan.dx * 0.8; tipSpring.vy += -plan.dy * 0.8; }   // 박차고 나가는 반동
+    d.rate = 30;
+    setMode('flee');
+  }
+
+  // 머리: 연속으로 돌지 않고 '툭툭' 끊어서 (잠자리 특유의 머리 움직임)
+  function updateHead(dt, wantYaw) {
+    head.next -= dt;
+    if (Math.abs(angDiffDeg(head.goal, wantYaw)) > 7 || head.next <= 0) { head.goal = wantYaw; head.next = rand(0.12, 0.3); }
+    head.yaw = lerp(head.yaw, head.goal, Math.min(1, dt * 28));
+    d.headYaw = head.yaw;
+  }
+
+  loop((dt, t) => {
+    if (!dt) return;
+    modeT += dt;
+    // 포인터 속도는 움직임이 멈추면 서서히 0으로
+    if (performance.now() / 1000 - ptr.t > 0.08) { ptr.vx *= Math.exp(-dt * 10); ptr.vy *= Math.exp(-dt * 10); }
+    const pd = ptr.on ? Math.hypot(ptr.x - d.x, ptr.y - d.y) : Infinity;
+    const pspeed = Math.hypot(ptr.vx, ptr.vy);
+    const bearingPtr = Math.atan2(ptr.y - d.y, ptr.x - d.x) * RAD + 90;
+    const seeR = 330 * K;                                 // 포인터를 알아채는 거리
+
+    // 갈대 끝 스프링
+    tipSpring.vx += (-tipSpring.x * 90 - tipSpring.vx * 7) * dt; tipSpring.vy += (-tipSpring.y * 90 - tipSpring.vy * 7) * dt;
+    tipSpring.x += tipSpring.vx * dt; tipSpring.y += tipSpring.vy * dt;
+    const tip = tipNow(t);
+
+    let restGoal = 1, bankGoal = 0, pitchGoal = 0, altGoal = FLY_ALT + wa(t) * 5, wantYaw = 0;
+    twitch.next -= dt;
+
+    if (mode === 'perch') {
+      d.x = tip.x; d.y = tip.y;
+      altGoal = PERCH_ALT;
+      // 포인터 쪽으로 머리(크게) + 몸(조금) + 기울기
+      if (pd < seeR) {
+        const rel = angDiffDeg(perchHeading, bearingPtr);
+        d.heading = lerp(d.heading, perchHeading + clamp(rel * 0.25, -14, 14), Math.min(1, dt * 3));
+        wantYaw = clamp(angDiffDeg(d.heading, bearingPtr), -40, 40);   // 몸이 못 따라간 만큼 머리가
+        bankGoal = clamp(rel * 0.12, -8, 8);
+        pitchGoal = -clamp((1 - pd / seeR) * 6, 0, 6);        // 가까우면 고개 들고 경계
+        // 빠르게 다가오면 날개를 들며 움찔
+        const closing = -((ptr.x - d.x) * ptr.vx + (ptr.y - d.y) * ptr.vy) / Math.max(1, pd);
+        if (pd < 170 * K && closing > 500 * K) flinch(clamp(closing / (1400 * K), 0.4, 1));
+      } else {
+        // 아무도 없으면: 가끔 주변을 둘러봄
+        if (head.next <= 0 && Math.random() < 0.12) head.goal = Math.random() < 0.3 ? 0 : rand(-32, 32);
+        wantYaw = head.goal;
+        d.heading = lerp(d.heading, perchHeading + wb(t) * 3, Math.min(1, dt * 2));
+        bankGoal = wb(t * 0.8 + 2) * 2.5;                   // 바람에 몸이 살짝 흔들림
+      }
+      // 가끔 날개를 '툭' 내렸다 올림
+      if (twitch.next <= 0) { twitch.t = 0; twitch.next = rand(3, 8); }
+    } else if (mode === 'flee') {
+      const W0 = plan.wind;
+      if (modeT < W0) {
+        // 예비동작: 몸을 살짝 낮추고 날개를 확 들어 올림
+        restGoal = 0; flinch(1);
+        altGoal = d.alt - 3; d.x = plan.sx; d.y = plan.sy;
+      } else {
+        const u = clamp((modeT - W0) / plan.dur, 0, 1);
+        const e = easeOutQuart(u) * (1 + plan.over);
+        d.x = plan.sx + plan.dx * e; d.y = plan.sy + plan.dy * e;
+        d.heading = plan.h0 + angDiffDeg(plan.h0, plan.h1) * easeOutQuart(Math.min(1, u * 2.2));
+        const sw = Math.sin(Math.PI * Math.min(1, u * 1.3));
+        bankGoal = clamp(d.yawRate * 0.05, -35, 35) * sw;
+        pitchGoal = 12 * sw;
+        restGoal = 0;
+        if (u >= 1) { plan.hx = plan.sx + plan.dx; plan.hy = plan.sy + plan.dy; plan.hoverFor = rand(1.5, 3.2); setMode('hover'); }
+      }
+    } else if (mode === 'hover') {
+      restGoal = 0;
+      // 오버슛 되돌림 + 정지비행 흔들림
+      const back = 1 + plan.over * (1 - ease(Math.min(1, modeT / 0.3)));
+      d.x = plan.sx + plan.dx * back + wx(t) * 2.5 * K; d.y = plan.sy + plan.dy * back + wy(t) * 2.5 * K;
+      // 포인터가 있으면 그쪽을 바라보고, 없으면 갈대 쪽을 봄
+      const look = pd < seeR * 1.6 ? bearingPtr : Math.atan2(tip.y - d.y, tip.x - d.x) * RAD + 90;
+      const diff = angDiffDeg(d.heading, look);
+      d.heading += clamp(diff, -320 * dt, 320 * dt);
+      wantYaw = clamp(diff, -30, 30);
+      if (pd < 120 * K && pspeed > 250 * K) { flee(); }
+      else if (modeT > plan.hoverFor && (pd > 140 * K)) {
+        plan.rx = d.x; plan.ry = d.y; plan.rh = d.heading;
+        plan.rdur = clamp(Math.hypot(tip.x - d.x, tip.y - d.y) / (S * 0.75), 0.6, 1.1);
+        setMode('return');
+      }
+    } else if (mode === 'return') {
+      restGoal = 0;
+      // 부드럽게 출발·감속 (ease in-out), 갈대 위 조금 높은 곳까지
+      const u = clamp(modeT / plan.rdur, 0, 1), e = ease(u);
+      const T = tipNow(t);
+      d.x = lerp(plan.rx, T.x, e) + Math.sin(Math.PI * u) * wx(t * 2) * 6 * K;
+      d.y = lerp(plan.ry, T.y, e) + Math.sin(Math.PI * u) * wy(t * 2) * 6 * K;
+      const travel = Math.atan2(T.y - plan.ry, T.x - plan.rx) * RAD + 90;
+      // 앞부분은 가는 방향을, 뒷부분은 앉을 방향을 바라봄
+      const hGoal = u < 0.55 ? travel : perchHeading;
+      d.heading += clamp(angDiffDeg(d.heading, hGoal), -260 * dt, 260 * dt);
+      bankGoal = clamp(d.yawRate * 0.06, -25, 25);
+      pitchGoal = u < 0.5 ? 8 : -9;                           // 출발 땐 머리 숙이고, 다가가며 머리 들어 제동
+      altGoal = lerp(FLY_ALT, PERCH_ALT + 10, e);
+      if (pd < 110 * K && pspeed > 250 * K) flee();
+      else if (u >= 1) { plan.landed = false; setMode('land'); }
+    } else if (mode === 'land') {
+      // 내려앉기: 높이 ↓, 날개는 살짝 넘치며 휴식 자세로, 갈대가 출렁
+      const u = clamp(modeT / 0.5, 0, 1);
+      d.x = tip.x; d.y = tip.y;
+      altGoal = PERCH_ALT;
+      d.alt = lerp(PERCH_ALT + 10, PERCH_ALT, easeOutBack(u, 2.2));
+      if (!plan.landed && u > 0.35) { plan.landed = true; const hr = d.heading / RAD; tipSpring.vx += Math.sin(hr) * 60 * K; tipSpring.vy += -Math.cos(hr) * 60 * K + 40 * K; }
+      d.heading += clamp(angDiffDeg(d.heading, perchHeading), -200 * dt, 200 * dt);
+      restGoal = u < 0.3 ? 0 : 1;
+      pitchGoal = u < 0.6 ? 5 : 0;
+      if (u >= 1) { head.goal = 0; setMode('perch'); }
+    }
+
+    // 날갯짓 ↔ 휴식 자세 섞기
+    restMix = restGoal > restMix ? Math.min(1, restMix + dt * 3.2) : Math.max(0, restMix - dt * 22);
+    flinchAmt = Math.max(0, flinchAmt - dt * 2.2);
+    if (mode !== 'land' && mode !== 'perch') d.alt = lerp(d.alt, altGoal, Math.min(1, dt * 6));
+    else if (mode === 'perch') d.alt = lerp(d.alt, altGoal - flinchAmt * 3, Math.min(1, dt * 10));
+    d.bank = lerp(d.bank, bankGoal, Math.min(1, dt * 12));
+    d.pitch = lerp(d.pitch, pitchGoal, Math.min(1, dt * 10));
+    d.phaseOffset = mode === 'flee' || mode === 'return' ? 75 : 165;
+    d.amp = mode === 'flee' ? 40 : 30;
+    updateHead(dt, wantYaw);
+    d.update(dt);
+
+    // 휴식 자세 각도: 움찔하면 들림, 가끔 '툭' (twitch)
+    twitch.t += dt;
+    const tw = twitch.t < 0.28 ? Math.sin(Math.PI * twitch.t / 0.28) * (1 - twitch.t / 0.28 * 0.4) : 0;
+    const settle = mode === 'land' ? Math.sin(Math.PI * clamp((modeT - 0.15) / 0.35, 0, 1)) * 10 : 0;  // 넘쳤다 돌아옴
+    const rf = REST.fore + flinchAmt * 34 + tw * 12 - settle;
+    const rh = REST.hind + flinchAmt * 30 + tw * 10 - settle * 0.8;
+    const m = ease(restMix);
+    d.foreAngle = lerp(d.foreAngle, rf, m); d.hindAngle = lerp(d.hindAngle, rh, m);
+    d.foreGhost = lerp(d.foreGhost, rf, m); d.hindGhost = lerp(d.hindGhost, rh, m);
+    d.foreSweep = lerp(0, REST.foreSweep + flinchAmt * 9, m);
+    d.hindSweep = lerp(0, REST.hindSweep + flinchAmt * 7, m);
+    d.blur = clamp((d.rate - 9) / 12, 0, 1) * (1 - m);
+    d.abdBend = restMix > 0.5 ? wb(t * 0.6 + 7) * 2 : 0;
+    d.render();
+
+    // 갈대 그리기
+    ctx.clearRect(0, 0, W, H);
+    for (const r of others) {
+      const w = windAt(t, r.p);
+      drawReed(r.bx, H + 10, r.tx + w, r.ty, 22, Math.max(2, 3.2 * K), 0.55);
+    }
+    drawReed(perchBase.x, perchBase.y, tip.x, tip.y, PERCH_ALT - 4, Math.max(2.4, 4 * K), 0.9);
+  });
+</script>
+</body>
+</html>

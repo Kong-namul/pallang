@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  잠자리 02 · 4날개 위상 클로즈업
+  앞날개·뒷날개를 같은 파형으로 치되 뒷날개를 '위상차'만큼 먼저 출발시킴. 각도는 rotateY + perspective 로 원근 단축.
+  위상차 0° = 네 장이 한 몸처럼, 180° = 서로 엇갈림(정지비행), 50~90° = 전진비행에 가까운 모습.
+  내려치기(44%)가 올리기보다 빠르고, 내려칠 때마다 몸이 살짝 들썩임. 왼쪽 위 그래프가 두 날개 각도를 보여줌.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>잠자리 02 · 4날개 위상 클로즈업</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  .ui { top: 10px; bottom: auto; flex-direction: column; align-items: flex-end; gap: 4px; }
+  .ui label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .ui input[type=range] { width: min(120px, 24vw); }
+  .ui output { min-width: 3.6em; text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
+  #graph { position: fixed; left: 10px; top: 10px; }
+</style>
+</head>
+<body>
+<div class="stage" id="stage"></div>
+<canvas id="graph"></canvas>
+<p class="hint"><b>위상차</b>를 바꿔 보세요 · 정지비행≈180°</p>
+<div class="ui">
+  <label>위상차 <input type="range" id="ph" min="0" max="180" value="90"> <output id="phv">90°</output></label>
+  <label>속도 <input type="range" id="sp" min="0" max="100" value="35"> <output id="spv"></output></label>
+</div>
+
+<script src="../../assets/dragonfly.js"></script>
+<script>
+  const { makeDragonfly, loop, clamp, lerp, wobble, strokeWave } = DF;
+  const stage = document.getElementById('stage');
+  const gc = document.getElementById('graph');
+  const g = gc.getContext('2d');
+  const ph = document.getElementById('ph'), sp = document.getElementById('sp');
+  const phv = document.getElementById('phv'), spv = document.getElementById('spv');
+
+  // 속도 슬라이더는 로그 눈금: 0.25Hz(슬로모션) ~ 25Hz(실제에 가까움)
+  const hz = () => 0.25 * Math.pow(100, sp.value / 100);
+  function readUI() {
+    phv.textContent = ph.value + '°';
+    const h = hz();
+    spv.textContent = (h < 10 ? h.toFixed(1) : h.toFixed(0)) + 'Hz';
+  }
+  ph.addEventListener('input', readUI); sp.addEventListener('input', readUI); readUI();
+
+  const d = makeDragonfly(stage, { hue: 8, amp: 36, bias: 6, jitter: 0.04, alt: 26, maxVisualRate: 14 });
+  let W = 0, H = 0, K = 0, GW = 0, GH = 0, cx = 0, cy = 0;
+  function resize() {
+    W = stage.clientWidth; H = stage.clientHeight;
+    const top = 58, bottom = 28;                         // 위 UI·아래 안내문 자리
+    const k = Math.max(0.3, Math.min(W * 0.86 / 128, (H - top - bottom) * 0.9 / 112));
+    if (Math.abs(k - K) > 0.01) { K = k; d.setSize(K); }
+    cx = W / 2; cy = top + (H - top - bottom) / 2 - 18 * K;   // 몸 전체(-37~73)의 가운데를 화면 가운데로
+    GW = Math.round(Math.min(230, W * 0.4)); GH = Math.round(GW * 0.34);
+    const dpr = devicePixelRatio || 1;
+    gc.width = GW * dpr; gc.height = GH * dpr; gc.style.width = GW + 'px'; gc.style.height = GH + 'px';
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  addEventListener('resize', resize); resize();
+
+  const wb = wobble(0.6), wh = wobble(0.4);
+  let css = null;
+  const readColors = () => {
+    const s = getComputedStyle(document.documentElement);
+    css = { fore: s.getPropertyValue('--accent').trim(), hind: s.getPropertyValue('--leaf').trim(),
+            ink: s.getPropertyValue('--ink').trim(), muted: s.getPropertyValue('--muted').trim() };
+  };
+  readColors();
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', readColors);
+
+  function drawGraph() {
+    g.clearRect(0, 0, GW, GH);
+    const padL = 4, padT = 14, w = GW - 8, h = GH - padT - 4;
+    const off = d.phaseOffset / 360;
+    const yOf = (v) => padT + h / 2 - (v - d.bias) / (d.amp * 1.15) * (h / 2) * 0.92;
+    g.globalAlpha = 0.35; g.strokeStyle = css.muted; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(padL, padT + h / 2); g.lineTo(padL + w, padT + h / 2); g.stroke();
+    g.globalAlpha = 1;
+    // 두 박자 분량을 그리고, 지금 위치를 세로선으로
+    const curve = (shift, mul, col) => {
+      g.strokeStyle = col; g.lineWidth = 1.6; g.beginPath();
+      for (let i = 0; i <= 80; i++) {
+        const p = (i / 80) * 2;
+        const v = d.bias + d.amp * mul * strokeWave(p + shift, d.split);
+        const x = padL + (i / 80) * w;
+        i ? g.lineTo(x, yOf(v)) : g.moveTo(x, yOf(v));
+      }
+      g.stroke();
+    };
+    curve(0, 1, css.fore);
+    curve(off, d.hindAmp, css.hind);
+    const mx = padL + (d.phase / 2) * w;
+    g.strokeStyle = css.ink; g.globalAlpha = 0.5; g.beginPath(); g.moveTo(mx, padT); g.lineTo(mx, padT + h); g.stroke();
+    g.globalAlpha = 1;
+    g.fillStyle = css.fore; g.beginPath(); g.arc(mx, yOf(d.foreAngle), 2.6, 0, 6.283); g.fill();
+    g.fillStyle = css.hind; g.beginPath(); g.arc(mx, yOf(d.hindAngle), 2.6, 0, 6.283); g.fill();
+    g.font = '11px system-ui, sans-serif'; g.textBaseline = 'top';
+    g.fillStyle = css.fore; g.fillText('앞날개', padL, 0);
+    g.fillStyle = css.hind; g.fillText('뒷날개', padL + 44, 0);
+    g.fillStyle = css.muted; g.fillText('↑위 ↓아래', padL + 88, 0);
+  }
+
+  loop((dt, t) => {
+    d.rate = hz();
+    d.phaseOffset = lerp(d.phaseOffset, +ph.value, Math.min(1, dt * 10));
+    d.update(dt);
+    // 내려치는 동안 몸이 살짝 떠오름 = 두 날개가 아래로 갈수록 높이 +
+    const push = ((d.bias - d.foreAngle) + (d.bias - d.hindAngle)) / (2 * d.amp);   // -1(위) ~ +1(아래)
+    const bobAmt = clamp(1.6 / Math.max(0.6, d.rate / 3), 0.1, 1);                  // 빠를수록 들썩임이 작게 보임
+    d.alt = 26 + push * 6 * bobAmt + wb(t) * 2;
+    d.x = cx + wb(t * 0.7) * 3 * K;
+    d.y = cy - push * 1.4 * K * bobAmt + wh(t) * 2 * K;
+    d.heading = wh(t * 0.8) * 2;
+    d.bank = wb(t * 0.5 + 3) * 3;
+    d.abdBend = wh(t * 1.3 + 5) * 3;
+    d.render();
+    drawGraph();
+  });
+</script>
+</body>
+</html>

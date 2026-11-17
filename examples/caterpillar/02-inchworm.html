@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  애벌레 02 · 자벌레 아치 이동
+  몸 모양 = 꼬리 끝·머리 끝 두 점 + 몸길이 고정. 두 점 사이 거리가 줄면 아치 높이를 이분법으로 풀어서
+  몸길이를 지킴 → 뒤가 당겨지면 자연스럽게 Ω, 앞이 뻗으면 펴짐. 잡는 쪽이 번갈아 바뀌고, 각 동작 사이에 멈춤(hold).
+  가끔 뒷다리로 버티고 앞몸을 세워 앞뒤로 더듬음. 모든 몸 모양은 같은 개수의 점으로 다시 뽑아서 서로 섞을 수 있게 함.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>애벌레 02 · 자벌레 아치 이동</title>
+<link rel="stylesheet" href="../../assets/base.css">
+</head>
+<body>
+<canvas class="fill" id="cv"></canvas>
+<p class="hint"><b>뒤가 당겨 Ω 아치</b> → 앞이 뻗어 펴짐 · 잡는 쪽이 번갈아, 가끔 일어나 더듬기</p>
+
+<script>
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  const TAU = Math.PI * 2;
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const smooth = (t) => { t = clamp(t, 0, 1); return t * t * (3 - 2 * t); };
+  const inOut = (t) => { t = clamp(t, 0, 1); return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; };
+  const backOut = (t, s) => { t = clamp(t, 0, 1) - 1; return t * t * ((s + 1) * t + s) + 1; };
+
+  const M = 48;                 // 몸 중심선 점 개수
+  let W = 0, H = 0, U = 0, L = 200, TH = 14, BT = 8, baseY = 0, amp = 6;
+  let ph1 = rand(0, 6), ph2 = rand(0, 6);
+
+  /** 가지의 높이 (살짝 굽이침) */
+  const by = (x) => baseY + amp * Math.sin(x * 0.006 + ph1) + amp * 0.5 * Math.sin(x * 0.017 + ph2);
+  /** 몸 중심선이 놓이는 높이 = 가지 윗면 + 몸 두께 절반 */
+  const surf = (x) => by(x) - BT * 0.5 - TH * 0.48;
+
+  // ---------------- 상태 ----------------
+  const S = { mode: 'holdB', t: 0, dur: 0.5, xt: 0, xh: 0, x0: 0, liftT: 0, liftH: 0,
+              R: 0, rearIn: rand(2, 4), time: 0, sway: 0 };
+
+  function resize() {
+    W = innerWidth; H = innerHeight; U = Math.min(W, H);
+    const dpr = devicePixelRatio || 1;
+    cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const oldL = L;
+    L = clamp(Math.min(W * 0.36, H * 0.6), 90, 300);
+    TH = Math.max(6, L * 0.068);
+    BT = Math.max(5, L * 0.055);
+    baseY = H * 0.64;
+    amp = Math.min(H * 0.025, 12);
+    if (!S.xh) { S.xt = W * 0.12; S.xh = S.xt + L; }
+    else { const k = L / oldL; S.xt *= k; S.xh = S.xt + (S.xh - S.xt) * k; S.x0 *= k; }
+  }
+  addEventListener('resize', resize);
+  resize();
+
+  // ---------------- 몸 모양 ----------------
+  function resample(pts) {
+    const cum = [0];
+    for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
+    const tot = cum[cum.length - 1], out = [];
+    let j = 1;
+    for (let k = 0; k < M; k++) {
+      const s = (k / (M - 1)) * tot;
+      while (j < pts.length - 1 && cum[j] < s) j++;
+      const f = clamp((s - cum[j - 1]) / Math.max(1e-6, cum[j] - cum[j - 1]), 0, 1);
+      out.push({ x: lerp(pts[j - 1].x, pts[j].x, f), y: lerp(pts[j - 1].y, pts[j].y, f) });
+    }
+    return out;
+  }
+  function polyLen(p) { let s = 0; for (let i = 1; i < p.length; i++) s += Math.hypot(p[i].x - p[i - 1].x, p[i].y - p[i - 1].y); return s; }
+
+  /** 아치 한 줄: A → B, 높이 h. Ω 처럼 양옆이 바깥으로 불룩 */
+  function archPts(A, B, h, La) {
+    const D = Math.hypot(B.x - A.x, B.y - A.y);
+    const b = h * 0.32 * clamp(1 - D / La, 0, 1);
+    const pts = [];
+    for (let i = 0; i <= 28; i++) {
+      const u = i / 28, m = (1 - Math.cos(Math.PI * u)) / 2;
+      pts.push({ x: lerp(A.x, B.x, m) - b * Math.sin(TAU * u), y: lerp(A.y, B.y, m) - h * Math.sin(Math.PI * u) });
+    }
+    return pts;
+  }
+
+  /** 걷기 자세: 꼬리 끝 xt, 머리 끝 xh, 각각 들린 높이 */
+  function walkBody(xt, xh, liftT, liftH) {
+    const f = L * 0.13, La = L - 2 * f;
+    const pts = [];
+    for (let i = 0; i <= 5; i++) {                       // 꼬리 쪽 붙잡은 부분
+      const x = xt + (f * i) / 5;
+      pts.push({ x, y: surf(x) - liftT * (1 - (i / 5) * 0.6) });
+    }
+    const A = pts[pts.length - 1];
+    const B = { x: xh - f * (1 - 0.25 * clamp(liftH / (L * 0.2), 0, 1)), y: surf(xh - f) - liftH * 0.8 };
+    // 몸길이를 지키는 아치 높이 찾기 (이분법)
+    let lo = 0, hi = La * 0.75, h = 0;
+    if (polyLen(archPts(A, B, 0, La)) < La) {
+      for (let k = 0; k < 22; k++) {
+        h = (lo + hi) / 2;
+        if (polyLen(archPts(A, B, h, La)) < La) lo = h; else hi = h;
+      }
+    }
+    const arch = archPts(A, B, h, La);
+    for (let i = 1; i < arch.length; i++) pts.push(arch[i]);
+    for (let i = 1; i <= 5; i++) {                       // 머리 쪽
+      const x = lerp(B.x, xh, i / 5);
+      pts.push({ x, y: lerp(B.y, surf(xh) - liftH, i / 5) });
+    }
+    return resample(pts);
+  }
+
+  /** 일어서기 자세: 뒷몸은 가지에, 앞몸은 R(0~1)만큼 세워서 sway로 앞뒤 더듬기 */
+  function rearBody(xt, R, sway, nod) {
+    const Lr = L * 0.48, Lf = L - Lr;
+    const pts = [];
+    for (let i = 0; i <= 12; i++) { const x = xt + (Lr * i) / 12; pts.push({ x, y: surf(x) }); }
+    const p0 = pts[pts.length - 1];
+    const a0 = Math.atan2(surf(p0.x + 2) - surf(p0.x - 2), 4);
+    let x = p0.x, y = p0.y;
+    const n = 30, ds = Lf / n, tip = 1.2 + sway;
+    for (let i = 1; i <= n; i++) {
+      const s = i * ds;
+      const a = a0 - R * (tip * smooth(s / (Lf * 0.5)) + nod * smooth((s - Lf * 0.75) / (Lf * 0.25)));
+      x += Math.cos(a) * ds; y += Math.sin(a) * ds;
+      pts.push({ x, y });
+    }
+    return resample(pts);
+  }
+
+  // ---------------- 그리기 ----------------
+  function drawTwig() {
+    // 가지 본체
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    const path = () => { ctx.beginPath(); for (let x = -20; x <= W + 20; x += 8) x === -20 ? ctx.moveTo(x, by(x)) : ctx.lineTo(x, by(x)); };
+    // 곁가지와 잎 (가지보다 먼저)
+    [[0.27, -1], [0.71, 1]].forEach(([fx, s]) => {
+      const x = W * fx, y = by(x);
+      ctx.strokeStyle = '#6b4e33'; ctx.lineWidth = BT * 0.55;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.quadraticCurveTo(x + s * L * 0.15, y + L * 0.12, x + s * L * 0.28, y + L * 0.2); ctx.stroke();
+      const lx = x + s * L * 0.28, ly = y + L * 0.2;
+      ctx.fillStyle = '#5d9b5a'; ctx.strokeStyle = '#3f7a3c'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(lx, ly);
+      ctx.quadraticCurveTo(lx + s * L * 0.2, ly - L * 0.02, lx + s * L * 0.3, ly + L * 0.12);
+      ctx.quadraticCurveTo(lx + s * L * 0.08, ly + L * 0.14, lx, ly);
+      ctx.fill(); ctx.stroke();
+    });
+    path(); ctx.strokeStyle = '#4e3824'; ctx.lineWidth = BT + 2; ctx.stroke();
+    path(); ctx.strokeStyle = '#7a5a3c'; ctx.lineWidth = BT; ctx.stroke();
+    ctx.save(); ctx.translate(0, -BT * 0.22);
+    path(); ctx.strokeStyle = 'rgba(200,170,130,0.45)'; ctx.lineWidth = BT * 0.22; ctx.stroke();
+    ctx.restore();
+    // 마디 눈(작은 혹)
+    ctx.fillStyle = '#5e432b';
+    for (let i = 0; i < 6; i++) {
+      const x = W * (0.08 + i * 0.17) + ((i * 37) % 23);
+      ctx.beginPath(); ctx.ellipse(x, by(x) - BT * 0.45, BT * 0.28, BT * 0.18, 0, 0, TAU); ctx.fill();
+    }
+  }
+
+  function drawWorm(p, headLift, tailLift) {
+    const tg = p.map((q, i) => {
+      const a = p[Math.max(0, i - 1)], b = p[Math.min(M - 1, i + 1)];
+      const l = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+      return { x: (b.x - a.x) / l, y: (b.y - a.y) / l };
+    });
+    const nrm = tg.map((t) => ({ x: t.y, y: -t.x }));   // 등 쪽
+    const line = (off, w, color) => {
+      ctx.beginPath();
+      for (let i = 0; i < M; i++) {
+        const x = p[i].x + nrm[i].x * off, y = p[i].y + nrm[i].y * off;
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
+      ctx.lineWidth = w; ctx.strokeStyle = color; ctx.stroke();
+    };
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+
+    // 다리 (몸 뒤에 그림)
+    const legs = (idx, len, w, color, dangle) => {
+      idx.forEach((i, k) => {
+        const n = nrm[i], t = tg[i];
+        const bx = p[i].x - n.x * TH * 0.3, by_ = p[i].y - n.y * TH * 0.3;
+        const wig = dangle * Math.sin(S.time * 11 + k * 1.9) * 0.6;
+        const dx = -n.x * Math.cos(wig) + t.x * (Math.sin(wig) + dangle * 0.5);
+        const dy = -n.y * Math.cos(wig) + t.y * (Math.sin(wig) + dangle * 0.5);
+        ctx.strokeStyle = color; ctx.lineWidth = w;
+        ctx.beginPath(); ctx.moveTo(bx, by_); ctx.lineTo(bx + dx * len, by_ + dy * len); ctx.stroke();
+      });
+    };
+    legs([M - 4, M - 6, M - 8], TH * 0.62, Math.max(1, TH * 0.13), '#2f4a1c', clamp(headLift / (TH * 1.2), 0, 1));
+    legs([1, 3], TH * 0.5, TH * 0.42, '#5f8f36', clamp(tailLift / TH, 0, 1) * 0.4);
+
+    line(0, TH + 2.4, '#3a6022');        // 외곽
+    line(0, TH, '#8cc152');              // 몸
+    line(-TH * 0.24, TH * 0.34, 'rgba(214,236,164,0.9)');   // 배 쪽 밝은 띠
+    line(TH * 0.3, TH * 0.13, 'rgba(70,115,40,0.9)');       // 등줄
+    // 마디 주름
+    ctx.strokeStyle = 'rgba(40,80,20,0.35)'; ctx.lineWidth = Math.max(0.8, TH * 0.08);
+    for (let i = 4; i < M - 4; i += 3) {
+      const n = nrm[i];
+      ctx.beginPath();
+      ctx.moveTo(p[i].x + n.x * TH * 0.46, p[i].y + n.y * TH * 0.46);
+      ctx.lineTo(p[i].x - n.x * TH * 0.1, p[i].y - n.y * TH * 0.1);
+      ctx.stroke();
+    }
+    // 머리
+    const hp = p[M - 1], ht = tg[M - 1], hn = nrm[M - 1];
+    const hx = hp.x + ht.x * TH * 0.15, hy = hp.y + ht.y * TH * 0.15, hr = TH * 0.6;
+    const g = ctx.createRadialGradient(hx - hr * 0.3, hy - hr * 0.4, hr * 0.1, hx, hy, hr * 1.1);
+    g.addColorStop(0, '#b6d470'); g.addColorStop(1, '#5d8a2c');
+    ctx.fillStyle = g; ctx.strokeStyle = '#3a6022'; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.arc(hx, hy, hr, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#1e2a12';
+    ctx.beginPath(); ctx.arc(hx + ht.x * hr * 0.35 + hn.x * hr * 0.25, hy + ht.y * hr * 0.35 + hn.y * hr * 0.25, hr * 0.17, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(hx + ht.x * hr * 0.8 - hn.x * hr * 0.35, hy + ht.y * hr * 0.8 - hn.y * hr * 0.35, hr * 0.2, 0, TAU); ctx.fill();
+  }
+
+  // ---------------- 동작 ----------------
+  function next(mode, dur) { S.mode = mode; S.t = 0; S.dur = dur; S.x0 = mode === 'pull' ? S.xt : S.xh; }
+
+  let last = null;
+  function frame(now) {
+    const dt = last == null ? 0 : clamp((now - last) / 1000, 0, 0.05);
+    last = now;
+    S.time += dt; S.t += dt;
+    const f = L * 0.13, La = L - 2 * f;
+    const p = clamp(S.t / S.dur, 0, 1);
+    S.liftT = 0; S.liftH = 0;
+
+    if (S.mode === 'pull') {
+      // 앞발로 잡고 뒤를 끌어옴 → 아치가 솟음. 끝에서 살짝 넘쳤다 자리 잡음
+      const stride = La * 0.8;
+      S.xt = S.x0 + stride * backOut(inOut(p), 0.9) ;
+      S.liftT = Math.sin(Math.PI * p) * TH * 0.8;
+      if (p >= 1) next('holdA', rand(0.18, 0.45));
+    } else if (S.mode === 'holdA') {
+      if (p >= 1) next('reach', rand(0.85, 1.15));
+    } else if (S.mode === 'reach') {
+      // 뒷다리로 잡고 앞을 들어 쭉 뻗음: 먼저 들고 → 앞으로 → 살며시 내려놓기
+      const target = S.xt + L;
+      S.xh = lerp(S.x0, target, inOut(Math.max(0, p * 1.12 - 0.08)));
+      S.liftH = Math.sin(Math.PI * Math.pow(p, 0.7)) * L * 0.16;
+      if (p >= 1) { S.xh = target; next('holdB', rand(0.25, 0.6)); }
+    } else if (S.mode === 'holdB') {
+      if (p >= 1) {
+        S.rearIn -= 1;
+        if (S.rearIn <= 0) { S.rearIn = Math.floor(rand(2, 5)); next('rear', rand(2.6, 4.2)); }
+        else next('pull', rand(0.8, 1.1));
+      }
+    } else if (S.mode === 'rear') {
+      // 일어섰다(0.7초) → 더듬기 → 내려옴(0.6초)
+      const up = smooth(S.t / 0.7), down = smooth((S.dur - S.t) / 0.6);
+      S.R = Math.min(up, down);
+      if (p >= 1) { S.R = 0; next('pull', rand(0.8, 1.1)); }
+    }
+
+    // 오른쪽으로 사라지면 왼쪽에서 다시
+    const span = W + L * 1.05;
+    if (S.xt > W + L * 0.1) { S.xt -= span; S.xh -= span; S.x0 -= span; }
+
+    // 더듬기: 불규칙한 앞뒤 흔들기 + 끝마디 끄덕
+    const t = S.time;
+    S.sway = 0.38 * Math.sin(t * 1.7) + 0.2 * Math.sin(t * 3.3 + 1.1) + 0.12 * Math.sin(t * 6.1);
+    const nod = 0.35 * Math.sin(t * 4.3 + 0.5);
+
+    ctx.clearRect(0, 0, W, H);
+    drawTwig();
+    const draw = (off) => {
+      let body = walkBody(S.xt + off, S.xh + off, S.liftT, S.liftH);
+      let headLift = S.liftH;
+      if (S.R > 0) {
+        const r = rearBody(S.xt + off, S.R, S.sway, nod);
+        const k = clamp(S.R * 4, 0, 1);
+        body = body.map((q, i) => ({ x: lerp(q.x, r[i].x, k), y: lerp(q.y, r[i].y, k) }));
+        headLift = Math.max(headLift, S.R * L * 0.4);
+      }
+      drawWorm(body, headLift, S.liftT);
+    };
+    draw(0);
+    if (S.xt > W - L * 1.1) draw(-span);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>

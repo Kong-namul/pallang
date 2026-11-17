@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  애벌레 01 · 연동 운동으로 기어가기
+  머리가 지나간 길(호 길이로 저장)을 몸통 마디가 따라감. 각 마디는 "확정 위치 + 이번 파동의 진행도"로 놓이고,
+  파동은 꼬리 → 머리로 지나가며 마디를 하나씩 들어 앞으로 옮김 → 지나가는 곳이 뭉쳤다 펴짐, 머리는 파동이 도착해야 전진.
+  들린 마디는 살짝 커지고 그림자가 멀어짐(깊이). 가끔 멈춰 앞부분을 들고 고개를 스프링처럼 두리번.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>애벌레 01 · 연동 운동으로 기어가기</title>
+<link rel="stylesheet" href="../../assets/base.css">
+</head>
+<body>
+<canvas class="fill" id="cv"></canvas>
+<p class="hint">꼬리→머리로 <b>수축 파동</b>이 지나가야 머리가 나아감 · 가끔 멈춰 고개 들고 두리번</p>
+
+<script>
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  const TAU = Math.PI * 2;
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const damp = (a, b, k, dt) => lerp(a, b, 1 - Math.exp(-k * dt));
+  const smooth = (t) => { t = clamp(t, 0, 1); return t * t * (3 - 2 * t); };
+  /** 끝에서 살짝 넘쳤다 돌아오는 이징 (머리가 앞으로 쭉 뻗는 느낌) */
+  const backOut = (t, s) => { t = clamp(t, 0, 1) - 1; return t * t * ((s + 1) * t + s) + 1; };
+  const angDiff = (a, b) => { let d = (b - a) % TAU; if (d > Math.PI) d -= TAU; if (d < -Math.PI) d += TAU; return d; };
+
+  const N = 13;          // 마디 수 (0 = 머리)
+  const K = 4;           // 앞쪽 몇 마디가 고개 돌리기에 같이 휘는지
+  let W = 0, H = 0, U = 0, G = 10, DS = 2;
+  let shade = 'rgba(28,48,36,0.26)', muted = '#5b6b62';
+
+  function readTheme() {
+    const cs = getComputedStyle(document.documentElement);
+    shade = cs.getPropertyValue('--shade').trim() || shade;
+    muted = cs.getPropertyValue('--muted').trim() || muted;
+  }
+  matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', readTheme);
+  readTheme();
+
+  // ---------------- 길 (머리가 지나간 자취) ----------------
+  // pts[k] 는 호 길이 (base + k) * DS 지점. 머리 앞쪽은 필요할 때 조금씩 만들어 냄
+  const tr = { pts: [], base: 0 };
+  const gen = { x: 0, y: 0, th: 0, s: 0, p1: 0, p2: 0, p3: 0 };
+
+  function genPoint() {
+    const s = gen.s;
+    // 부드러운 노이즈(사인 3개)로 굽이 → 천천히 휘어 다니는 길
+    let k = (Math.sin(s / (G * 7) + gen.p1) + 0.6 * Math.sin(s / (G * 3.1) + gen.p2) +
+             0.35 * Math.sin(s / (G * 13) + gen.p3)) / (G * 9);
+    // 가장자리에 가까우면 가운데 쪽으로 돈다
+    const m = U * 0.2 + G * 2;
+    const e = Math.max(0, (m - gen.x) / m, (gen.x - (W - m)) / m, (m - gen.y) / m, (gen.y - (H - m)) / m);
+    if (e > 0) k += angDiff(gen.th, Math.atan2(H / 2 - gen.y, W / 2 - gen.x)) * Math.min(1.5, e) / (G * 2.5);
+    k = clamp(k, -1 / (G * 2.8), 1 / (G * 2.8));
+    gen.th += k * DS;
+    gen.x += Math.cos(gen.th) * DS; gen.y += Math.sin(gen.th) * DS; gen.s += DS;
+    tr.pts.push({ x: gen.x, y: gen.y });
+  }
+  function at(P) {
+    let k = P / DS - tr.base;
+    while (k >= tr.pts.length - 1) genPoint();
+    k = Math.max(0, k);
+    const i = Math.floor(k), f = k - i;
+    const a = tr.pts[i], b = tr.pts[i + 1];
+    return { x: lerp(a.x, b.x, f), y: lerp(a.y, b.y, f) };
+  }
+
+  // ---------------- 애벌레 상태 ----------------
+  let C = [];                 // 마디별 확정 호 길이
+  const R = [];               // 마디별 반지름 비율
+  for (let i = 0; i < N; i++) {
+    const f = i / (N - 1);
+    let r = i === 0 ? 0.8 : 0.9 + 0.1 * Math.min(1, f * 4);
+    r -= 0.4 * Math.pow(Math.max(0, (f - 0.62) / 0.38), 1.5);   // 꼬리 쪽 가늘게
+    R.push(r);
+  }
+  const cyc = { on: false, t: 0, dur: 1, d: 0 };
+  const st = { mode: 'crawl', rest: 0.4, pauseIn: rand(4, 7), pauseT: 0,
+               L: 0, look: 0, lookV: 0, lookGoal: 0, lookT: 0, time: 0 };
+
+  function init() {
+    tr.pts = []; tr.base = 0;
+    Object.assign(gen, { x: W * 0.18, y: H * rand(0.4, 0.65), th: rand(-0.5, 0.3), s: rand(0, 900),
+                         p1: rand(0, 6), p2: rand(0, 6), p3: rand(0, 6) });
+    tr.pts.push({ x: gen.x, y: gen.y });
+    C = [];
+    for (let i = 0; i < N; i++) C.push((N - 1 - i) * G + G);
+    cyc.on = false;
+  }
+
+  function resize() {
+    W = innerWidth; H = innerHeight; U = Math.min(W, H);
+    const dpr = devicePixelRatio || 1;
+    cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const g = clamp(U * 0.03, 6.5, 17);
+    if (!C.length || Math.abs(g - G) / G > 0.2) { G = g; DS = G / 6; init(); }
+  }
+  addEventListener('resize', resize);
+  resize();
+
+  // 파동 안에서 마디 i 의 진행도 (꼬리가 먼저, 머리가 마지막)
+  const WIN = 0.4;
+  function prog(i, w) {
+    const order = (N - 1 - i) / (N - 1);        // 꼬리 0 → 머리 1
+    const x = (w - order * (1 - WIN)) / WIN;
+    return i === 0 ? backOut(x, 1.6) : smooth(x);
+  }
+
+  // ---------------- 그리기 ----------------
+  function draw(pos, ang, sc, lift) {
+    ctx.clearRect(0, 0, W, H);
+
+    // 실크 자국: 지나온 길을 옅게
+    const tailP = C[N - 1];
+    ctx.strokeStyle = muted; ctx.globalAlpha = 0.13; ctx.lineWidth = Math.max(1, G * 0.22);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    const endK = Math.max(0, Math.floor(tailP / DS - tr.base));
+    for (let k = 0; k <= endK; k += 3) { const p = tr.pts[k]; k ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // 그림자 (합집합 한 번에 칠해서 겹친 곳이 진해지지 않게)
+    ctx.fillStyle = shade;
+    ctx.beginPath();
+    for (let i = 0; i < N; i++) {
+      const r = R[i] * G * sc[i];
+      const off = G * (0.22 + lift[i] * 0.9);
+      const x = pos[i].x + off * 0.55, y = pos[i].y + off;
+      ctx.moveTo(x + r, y);
+      ctx.ellipse(x, y, r * 1.02, r * 0.98, 0, 0, TAU);
+    }
+    ctx.fill();
+
+    // 배다리(prolegs): 들린 마디는 다리를 오므림
+    ctx.fillStyle = '#3f6a22';
+    [N - 1, 9, 8, 7, 6].forEach((i) => {
+      const a = ang[i], nx = -Math.sin(a), ny = Math.cos(a);
+      const r = R[i] * G * sc[i], o = r * (1.0 - 0.3 * lift[i]);
+      for (const s of [-1, 1]) {
+        ctx.beginPath();
+        ctx.ellipse(pos[i].x + nx * o * s, pos[i].y + ny * o * s, r * 0.28, r * 0.2, a, 0, TAU);
+        ctx.fill();
+      }
+    });
+    // 가슴다리(true legs): 앞쪽 3쌍, 고개 들면 허우적
+    ctx.strokeStyle = '#2c3a16'; ctx.lineWidth = Math.max(1, G * 0.11);
+    for (let i = 1; i <= 3; i++) {
+      const a = ang[i], nx = -Math.sin(a), ny = Math.cos(a), fx = Math.cos(a), fy = Math.sin(a);
+      const r = R[i] * G * sc[i];
+      for (const s of [-1, 1]) {
+        const wave = st.L * Math.sin(st.time * 9 + i * 1.7 + s) * 0.35;
+        const bx = pos[i].x + nx * r * 0.75 * s, by = pos[i].y + ny * r * 0.75 * s;
+        const ex = bx + (nx * s * 0.42 + fx * (0.25 + wave)) * r, ey = by + (ny * s * 0.42 + fy * (0.25 + wave)) * r;
+        ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(ex, ey); ctx.stroke();
+      }
+    }
+
+    // 몸통: 꼬리 → 머리 순서로 겹쳐 그림
+    for (let i = N - 1; i >= 1; i--) {
+      const p = pos[i], a = ang[i];
+      const r = R[i] * G * sc[i];
+      // 뭉친 마디는 옆으로 불룩
+      const gp = (Math.hypot(p.x - pos[i - 1].x, p.y - pos[i - 1].y) +
+                  (i < N - 1 ? Math.hypot(p.x - pos[i + 1].x, p.y - pos[i + 1].y) : G)) / 2;
+      const bulge = 1 + clamp((G - gp) / G, -0.25, 0.7) * 0.32;
+      const g = ctx.createRadialGradient(p.x - r * 0.3, p.y - r * 0.38, r * 0.1, p.x, p.y, r * 1.1);
+      g.addColorStop(0, '#c6e88a'); g.addColorStop(0.55, '#8cc152'); g.addColorStop(1, '#4f8a2b');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y, r * 0.95 / Math.sqrt(bulge), r * bulge, a, 0, TAU);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(35,70,18,0.45)'; ctx.lineWidth = Math.max(0.8, G * 0.07);
+      ctx.stroke();
+      // 옆구리 숨구멍 무늬 (노란 테두리 + 검은 점)
+      if (i < N - 1) {
+        const nx = -Math.sin(a), ny = Math.cos(a), o = r * bulge * 0.62;
+        for (const s of [-1, 1]) {
+          const x = p.x + nx * o * s, y = p.y + ny * o * s;
+          ctx.fillStyle = '#f2d34a';
+          ctx.beginPath(); ctx.arc(x, y, r * 0.2, 0, TAU); ctx.fill();
+          ctx.fillStyle = '#1f2612';
+          ctx.beginPath(); ctx.arc(x, y, r * 0.11, 0, TAU); ctx.fill();
+        }
+      }
+    }
+    // 등줄 (꼬리 → 1번 마디)
+    ctx.strokeStyle = 'rgba(244,240,170,0.85)'; ctx.lineWidth = G * 0.2;
+    ctx.beginPath();
+    for (let i = N - 2; i >= 1; i--) i === N - 2 ? ctx.moveTo(pos[i].x, pos[i].y) : ctx.lineTo(pos[i].x, pos[i].y);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(25,40,12,0.55)';
+    for (let i = N - 2; i >= 2; i--) {
+      const a = ang[i], nx = -Math.sin(a), ny = Math.cos(a), r = R[i] * G * sc[i];
+      for (const s of [-1, 1]) {
+        ctx.beginPath(); ctx.arc(pos[i].x + nx * r * 0.24 * s, pos[i].y + ny * r * 0.24 * s, r * 0.075, 0, TAU); ctx.fill();
+      }
+    }
+
+    // 머리
+    const h = pos[0], ha = ang[0], hr = R[0] * G * sc[0];
+    const fx = Math.cos(ha), fy = Math.sin(ha), nx = -fy, ny = fx;
+    // 더듬이 (짧게, 따로 꼼지락)
+    ctx.strokeStyle = '#2c3a16'; ctx.lineWidth = Math.max(0.8, G * 0.08);
+    for (const s of [-1, 1]) {
+      const wig = Math.sin(st.time * (5 + s) + s) * 0.25 + st.look * 0.3;
+      const bx = h.x + fx * hr * 0.75 + nx * hr * 0.45 * s, by = h.y + fy * hr * 0.75 + ny * hr * 0.45 * s;
+      const aa = ha + s * 0.45 + wig;
+      const ex = bx + Math.cos(aa) * hr * 0.55, ey = by + Math.sin(aa) * hr * 0.55;
+      ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(ex, ey); ctx.stroke();
+      ctx.fillStyle = '#2c3a16'; ctx.beginPath(); ctx.arc(ex, ey, Math.max(0.8, G * 0.07), 0, TAU); ctx.fill();
+    }
+    const hg = ctx.createRadialGradient(h.x - hr * 0.3, h.y - hr * 0.35, hr * 0.1, h.x, h.y, hr * 1.1);
+    hg.addColorStop(0, '#b3cf62'); hg.addColorStop(0.6, '#7a9a32'); hg.addColorStop(1, '#46621c');
+    ctx.fillStyle = hg;
+    ctx.beginPath(); ctx.ellipse(h.x, h.y, hr * 0.95, hr * 0.9, ha, 0, TAU); ctx.fill();
+    ctx.strokeStyle = 'rgba(35,60,15,0.6)'; ctx.lineWidth = Math.max(0.8, G * 0.07); ctx.stroke();
+    // 홑눈 & 입
+    ctx.fillStyle = '#1b2210';
+    for (const s of [-1, 1]) {
+      ctx.beginPath(); ctx.arc(h.x + fx * hr * 0.45 + nx * hr * 0.5 * s, h.y + fy * hr * 0.45 + ny * hr * 0.5 * s, hr * 0.13, 0, TAU); ctx.fill();
+    }
+    ctx.beginPath(); ctx.ellipse(h.x + fx * hr * 0.82, h.y + fy * hr * 0.82, hr * 0.14, hr * 0.28, ha, 0, TAU); ctx.fill();
+  }
+
+  // ---------------- 루프 ----------------
+  let last = null;
+  function frame(now) {
+    const dt = last == null ? 0 : clamp((now - last) / 1000, 0, 0.05);
+    last = now;
+    st.time += dt;
+
+    // 1) 박자: 쉼 → (가끔 두리번) → 파동
+    if (!cyc.on) {
+      st.rest -= dt;
+      if (st.mode === 'crawl' && st.rest <= 0) {
+        if (st.pauseIn <= 0) {
+          st.mode = 'pause'; st.pauseT = rand(1.8, 3.2); st.lookT = 0.25;
+        } else {
+          cyc.on = true; cyc.t = 0; cyc.dur = rand(0.78, 1.08); cyc.d = G * rand(0.6, 0.72);
+        }
+      }
+    }
+    if (st.mode === 'pause') {
+      st.pauseT -= dt;
+      st.L = damp(st.L, 1, 4.5, dt);
+      st.lookT -= dt;
+      if (st.lookT <= 0) {                  // 휙휙 다른 쪽을 봄 (가끔 오래 응시)
+        st.lookT = Math.random() < 0.25 ? rand(0.8, 1.2) : rand(0.3, 0.6);
+        st.lookGoal = (st.lookGoal > 0 ? -1 : 1) * rand(0.35, 0.95);
+      }
+      if (st.pauseT <= 0) { st.mode = 'crawl'; st.rest = 0.45; st.pauseIn = rand(6, 12); }
+    } else {
+      st.L = damp(st.L, 0, 5, dt);
+      st.pauseIn -= dt;
+      st.lookGoal = 0.2 * Math.sin(st.time * 1.15) + 0.1 * Math.sin(st.time * 2.9 + 1.3);
+    }
+    // 고개: 스프링 (살짝 넘쳤다 돌아옴)
+    st.lookV += ((st.lookGoal - st.look) * 55 - st.lookV * 8.5) * dt;
+    st.look += st.lookV * dt;
+
+    // 2) 파동 진행
+    let w = 0;
+    if (cyc.on) {
+      cyc.t += dt;
+      w = cyc.t / cyc.dur;
+      if (w >= 1) {
+        for (let i = 0; i < N; i++) C[i] += cyc.d;
+        cyc.on = false;
+        st.rest = Math.random() < 0.2 ? rand(0.35, 0.7) : rand(0.04, 0.22);
+        w = 0;
+      }
+    }
+
+    // 3) 마디 위치
+    const P = [], lift = [], sc = [];
+    for (let i = 0; i < N; i++) {
+      const p = cyc.on ? prog(i, w) : 0;
+      P.push(C[i] + cyc.d * p);
+      const fr = Math.max(0, 1 - i / K);
+      lift.push((cyc.on ? Math.sin(Math.PI * clamp(p, 0, 1)) * 0.3 : 0) + st.L * fr * 0.7);
+      sc.push(1 + (cyc.on ? Math.sin(Math.PI * clamp(p, 0, 1)) * 0.1 : 0) + st.L * fr * 0.22);
+    }
+    const raw = P.map(at);
+    const pos = raw.slice();
+    // 앞쪽 K 마디: 뒤에서부터 사슬처럼 이어 붙이며 고개 방향만큼 휨. 들면 위에서 본 길이가 짧아짐
+    const headGo = cyc.on ? Math.sin(Math.PI * clamp(prog(0, w), 0, 1)) : 0;
+    const look = st.look * (1 - 0.6 * headGo);
+    for (let i = K - 1; i >= 0; i--) {
+      const a = raw[i], b = raw[i + 1];
+      const base = Math.atan2(a.y - b.y, a.x - b.x);
+      const wt = Math.pow((K - i) / K, 1.2);
+      const d = Math.hypot(a.x - b.x, a.y - b.y) * (1 - 0.2 * st.L * wt);
+      const an = base + look * wt * 0.5;
+      pos[i] = { x: pos[i + 1].x + Math.cos(an) * d, y: pos[i + 1].y + Math.sin(an) * d };
+    }
+    const ang = pos.map((p, i) => {
+      const a = pos[Math.max(0, i - 1)], b = pos[Math.min(N - 1, i + 1)];
+      return Math.atan2(a.y - b.y, a.x - b.x);
+    });
+    ang[0] = Math.atan2(pos[0].y - pos[1].y, pos[0].x - pos[1].x) + look * 0.35;
+
+    // 4) 오래된 자취 정리 (실크 자국용으로 몸길이 3배만 남김)
+    const keep = Math.floor((C[N - 1] - G * N * 3) / DS) - tr.base;
+    if (keep > 200) { tr.pts.splice(0, keep); tr.base += keep; }
+
+    draw(pos, ang, sc, lift);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>

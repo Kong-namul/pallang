@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  사마귀 01 · 흔들흔들 조준 후 낚아채기
+  발은 줄기에 붙인 채(IK) 몸통만 바람결에 불규칙하게 앞뒤로 흔들고, 머리는 화면 기준 각도로 따로 잡아 눈높이를 지킴.
+  고개는 파리를 '툭, 툭' 끊어서 따라가고(saccade), 사정거리에 들어오면 0.3초 얼어붙으며 뒤로 살짝 젖힘(예비동작)
+  → 0.07초 만에 앞다리를 IK 로 뻗어 낚아챔 → 접을 땐 훨씬 느리게, 몸은 스프링으로 되튐 → 오물오물 씹기.
+  파리는 포인터가 있으면 포인터를 따라오므로, 사마귀 앞으로 끌고 가면 바로 낚아챔.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>사마귀 01 · 흔들흔들 조준 후 낚아채기</title>
+<link rel="stylesheet" href="../../assets/base.css">
+</head>
+<body>
+<canvas class="fill" id="cv"></canvas>
+<p class="hint">풀잎처럼 <b>흔들흔들</b> → 얼어붙었다 <b>0.07초</b> 낚아채기 · 파리는 포인터를 따라옴</p>
+
+<script src="../../assets/mantis.js"></script>
+<script>
+  const { Mantis, makeWind, drawFly, loop, POSE, mixPose, clamp, lerp, rand, ease, easeOutCubic, easeInOutCubic,
+          approach, spring, angDiff, TAU } = MT;
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  let W = 0, H = 0, S = 1;
+
+  // ---------- 색 (base.css 토큰) ----------
+  const TH = {};
+  const hex = (c) => { const n = parseInt(c.replace('#', ''), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; };
+  const mix = (a, b, k) => { const A = hex(a), B = hex(b); return 'rgb(' + A.map((v, i) => Math.round(lerp(v, B[i], k))).join(',') + ')'; };
+  function readTheme() {
+    const cs = getComputedStyle(document.documentElement);
+    const leaf = cs.getPropertyValue('--leaf').trim() || '#5d9b5a';
+    const sky = cs.getPropertyValue('--sky-bot').trim() || '#f5f0e2';
+    const ink = cs.getPropertyValue('--ink').trim() || '#24302a';
+    TH.stem = mix(leaf, ink, 0.28); TH.leaf = leaf; TH.vein = mix(leaf, ink, 0.4);
+    TH.back = mix(leaf, sky, 0.62); TH.back2 = mix(leaf, sky, 0.78);
+  }
+  readTheme();
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', readTheme);
+
+  // ---------- 줄기 (휘는 2차 곡선) ----------
+  const U0 = 0.66, STAND = 33, NECK = 0.62;
+  const HOME = [34, 25, -42, -52];          // 발 위치: 몸 기준 줄기를 따라 앞(+)·뒤(-)
+  let stem = { p0: [0, 0], p1: [0, 0], p2: [0, 0] };
+  const feetU = [0, 0, 0, 0];
+  function stemAt(u, bx, by) {
+    const p0 = stem.p0, p1x = stem.p1[0] + bx * 0.3, p1y = stem.p1[1] + by * 0.3, p2x = stem.p2[0] + bx, p2y = stem.p2[1] + by;
+    const a = (1 - u) * (1 - u), b = 2 * (1 - u) * u, c = u * u;
+    const dx = 2 * (1 - u) * (p1x - p0[0]) + 2 * u * (p2x - p1x), dy = 2 * (1 - u) * (p1y - p0[1]) + 2 * u * (p2y - p1y);
+    const len = Math.hypot(dx, dy) || 1;
+    return { x: a * p0[0] + b * p1x + c * p2x, y: a * p0[1] + b * p1y + c * p2y, tx: dx / len, ty: dy / len, len };
+  }
+  const grass = [];
+  function resize() {
+    W = innerWidth; H = innerHeight;
+    const dpr = devicePixelRatio || 1;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    S = clamp(Math.min(W / 480, H / 350), 0.34, 1.7);
+    const ax = W * 0.31, ay = H * 0.7;
+    stem = { p0: [ax - 150 * S, Math.max(H + 16, ay + 200 * S)], p1: [ax - 92 * S, ay + 26 * S], p2: [ax + 176 * S, ay - 34 * S] };
+    const per = stemAt(U0, 0, 0).len;
+    HOME.forEach((o, i) => { feetU[i] = U0 + o * S / per; });
+    grass.length = 0;
+    const n = Math.round(clamp(W / 70, 5, 16));
+    for (let i = 0; i < n; i++) {
+      grass.push({ x: (i + rand(0.1, 0.9)) / n * W, h: rand(0.25, 0.62) * H, lean: rand(-0.25, 0.3), w: rand(5, 11) * S,
+                   lag: rand(0, 2.2), k: rand(0.6, 1.3), far: Math.random() < 0.5 });
+    }
+    m.size = S;
+  }
+
+  // ---------- 사마귀 ----------
+  const m = new Mantis({ gaze: 0.05 });
+  const wind = makeWind({ freq: 0.62, calm: 0.2 });
+  resize();
+  addEventListener('resize', resize);
+
+  let st = 'idle', stT = 0, cooldown = 1.4, zoneT = 0, swayK = 1;
+  const lunge = { x: 0, v: 0 };              // 몸 앞뒤 이동(단위) — 스프링이라 치고 나면 되튐
+  let lungeGoal = 0, lunge0 = 0, neckOff = 0, neckGoal = 0, neckRate = 7, pitchOff = 0, pitchGoal = 0;
+  let armFrom = { ...POSE.pray }, armNow = { ...POSE.pray };
+  let caught = false, startled = false;
+  const aim = { x: 0, y: 0 };
+  const chew = { dur: 2, ph: 0, n: 4, hz: 5.5, pause: 0 };
+  const eye = { gaze: 0.05, from: 0, to: 0, t: 1, dur: 0.1, wait: 0.3, thr: 0.1, idleT: 1, idleGoal: 0.05 };
+  const go = (s) => { st = s; stT = 0; armFrom = { ...armNow }; };
+
+  // ---------- 포인터 ----------
+  const ptr = { x: 0, y: 0, on: false, off: 0 };
+  addEventListener('pointermove', (e) => { ptr.x = e.clientX; ptr.y = e.clientY; ptr.on = true; ptr.off = 0; });
+  addEventListener('pointerdown', (e) => { ptr.x = e.clientX; ptr.y = e.clientY; ptr.on = true; ptr.off = 0; });
+  addEventListener('pointerup', (e) => { if (e.pointerType !== 'mouse') ptr.off = 1.5; });
+  document.documentElement.addEventListener('pointerleave', () => { ptr.on = false; });
+
+  // ---------- 파리 ----------
+  const fly = { x: 0, y: 0, vx: 0, vy: 0, mode: 'out', t: 0, wp: { x: 0, y: 0 }, hover: 0, kx: 0, ky: 0, kickT: 0,
+                dir: -1, eaten: 0, spawn: 0.5, flee: 0 };
+  function spawnFly() {
+    const top = Math.random() < 0.4;
+    fly.x = top ? rand(W * 0.55, W * 0.95) : W + 20;
+    fly.y = top ? -20 : rand(H * 0.1, H * 0.6);
+    fly.vx = fly.vy = 0; fly.mode = 'fly'; fly.eaten = 0; fly.flee = 0;
+    pickWp(true);
+  }
+  function pickWp(first) {
+    if (Math.random() < (first ? 0.2 : 0.42) && cooldown < 1) {
+      // 가끔 사마귀 코앞(사정거리 안)에서 얼쩡거림
+      const a = m.J.armRoot, ang = rand(-0.95, 0.15), r = rand(60, 90) * S;
+      fly.wp.x = a.x + Math.cos(ang) * r; fly.wp.y = a.y + Math.sin(ang) * r;
+      fly.hover = rand(0.7, 1.6);
+    } else {
+      fly.wp.x = rand(W * 0.4, W - 14); fly.wp.y = rand(14, H * 0.8);
+      fly.hover = rand(0.15, 0.9);
+    }
+    fly.wp.x = clamp(fly.wp.x, 10, W - 10); fly.wp.y = clamp(fly.wp.y, 10, H - 30);
+  }
+  function scareFly(power) {
+    const a = m.J.armRoot, dx = fly.x - a.x, dy = fly.y - a.y, d = Math.hypot(dx, dy) || 1;
+    const ang = Math.atan2(dy, dx) + rand(-0.7, 0.7);
+    fly.flee = rand(0.45, 0.7);
+    fly.wp.x = clamp(fly.x + Math.cos(ang) * 240 * S, 10, W - 10); fly.wp.y = clamp(fly.y + Math.sin(ang) * 240 * S - 40 * S, 10, H - 30);
+    fly.vx += dx / d * power * S; fly.vy += dy / d * power * S;
+  }
+  function stepFly(dt) {
+    fly.t += dt;
+    if (fly.mode === 'out') { if ((fly.spawn -= dt) <= 0) spawnFly(); return; }
+    if (fly.mode === 'caught') { const g = m.J.grip[0]; fly.x = g.x; fly.y = g.y; return; }
+    if (ptr.on && fly.flee <= 0) { fly.wp.x = ptr.x; fly.wp.y = ptr.y; }
+    const dx = fly.wp.x - fly.x, dy = fly.wp.y - fly.y, d = Math.hypot(dx, dy) || 1;
+    const near = d < 18 * S;
+    if (fly.flee > 0) { if ((fly.flee -= dt) <= 0) pickWp(); }
+    else if (near && !ptr.on && (fly.hover -= dt) <= 0) pickWp();
+    const sp = fly.flee > 0 ? 560 * S : clamp(d * 3.4, 0, 250 * S);
+    if ((fly.kickT -= dt) <= 0) {                           // 불규칙하게 툭툭 튀는 힘 → 지그재그
+      fly.kickT = rand(0.05, 0.2);
+      const a = rand(0, TAU), k = rand(40, 190) * S * (near ? 0.45 : 1);
+      fly.kx = Math.cos(a) * k; fly.ky = Math.sin(a) * k;
+    }
+    const r = 1 - Math.exp(-dt * (fly.flee > 0 ? 12 : 7));
+    fly.vx += (dx / d * sp + fly.kx - fly.vx) * r;
+    fly.vy += (dy / d * sp + fly.ky - fly.vy) * r;
+    fly.x += fly.vx * dt; fly.y += fly.vy * dt;
+    if (Math.abs(fly.vx) > 25 * S) fly.dir = approach(fly.dir, Math.sign(fly.vx), 14, dt);
+  }
+
+  // ---------- 고개: 끊어서 돌리기 ----------
+  function trackHead(dt, goal, lock) {
+    if (lock) { eye.gaze += angDiff(eye.gaze, goal) * (1 - Math.exp(-dt * lock)); eye.t = 1; return; }
+    if (eye.t < 1) {
+      eye.t = Math.min(1, eye.t + dt / eye.dur);
+      eye.gaze = eye.from + (eye.to - eye.from) * easeOutCubic(eye.t);
+      if (eye.t >= 1) eye.wait = rand(0.08, 0.34);          // 돌린 뒤엔 잠깐 멈춰 봄
+      return;
+    }
+    eye.wait -= dt;
+    const err = angDiff(eye.gaze, goal);
+    if (eye.wait <= 0 && Math.abs(err) > eye.thr) {
+      eye.from = eye.gaze; eye.to = eye.gaze + err * rand(0.9, 1.08);
+      eye.dur = 0.06 + Math.abs(err) * 0.07; eye.t = 0; eye.thr = rand(0.07, 0.17);
+    }
+  }
+
+  let bend = 0;
+  loop((dt, t) => {
+    wind.step(dt);
+    if (ptr.off > 0 && (ptr.off -= dt) <= 0) ptr.on = false;
+    stepFly(dt);
+    stT += dt; cooldown -= dt;
+
+    const alive = fly.mode === 'fly';
+    const am = alive ? m.aimFrom(fly.x, fly.y) : { ang: 0, dist: 1e9 };
+    const inZone = alive && am.dist > 44 && am.dist < 106 && am.ang > -1.55 && am.ang < 0.7;
+    zoneT = inZone ? zoneT + dt : 0;
+
+    // ----- 상태 기계: 목표값만 정함 -----
+    let swayGoal = 1, lock = 0, reachK = 0, tibia = 0.3, poseTo = POSE.pray, poseK = 1, eat = false;
+    neckRate = 7;
+    switch (st) {
+      case 'idle':
+        lungeGoal = 0; neckGoal = 0; pitchGoal = 0;
+        if (inZone && zoneT > 0.16 && cooldown <= 0) go('aim');
+        break;
+      case 'aim':                                            // 예비동작: 얼어붙고, 뒤로 살짝 젖히고, 낫을 조금 엶
+        swayGoal = 0; lock = 26;
+        poseTo = POSE.cock; poseK = ease(stT / 0.28);
+        lungeGoal = -7; neckGoal = 0.07; pitchGoal = -0.03;
+        if (!alive || am.dist > 122) { cooldown = 0.5; go('relax'); }
+        else if (stT > 0.32) {
+          startled = Math.random() < 0.3;                    // 가끔 파리가 먼저 눈치챔
+          if (startled) scareFly(380);
+          aim.x = fly.x; aim.y = fly.y; lunge0 = lunge.x;
+          go('strike');
+        }
+        break;
+      case 'strike':                                         // 0.07초: 몸은 앞으로, 앞다리는 목표까지 일직선
+        swayGoal = 0; lock = 40;
+        reachK = Math.pow(clamp(stT / 0.07, 0, 1), 0.75); tibia = lerp(armFrom.tibia, 2.3, clamp(stT / 0.045, 0, 1));
+        lunge.x = lerp(lunge0, 15, reachK); lunge.v = 110;
+        neckGoal = -0.2; neckRate = 46; pitchGoal = 0.045;
+        if (alive && !startled) { aim.x = fly.x; aim.y = fly.y; }
+        if (stT >= 0.07) {
+          const g = m.J.grip[0];
+          caught = alive && Math.hypot(fly.x - g.x, fly.y - g.y) < 17 * S;
+          if (caught) fly.mode = 'caught'; else if (alive && fly.flee <= 0) scareFly(300);
+          go('grab');
+        }
+        break;
+      case 'grab':                                           // 낫을 탁 닫음
+        swayGoal = 0; lock = 40; reachK = 1;
+        tibia = lerp(2.3, caught ? 0.66 : 0.42, easeOutCubic(stT / 0.045));
+        lungeGoal = 13; neckGoal = -0.2;
+        if (stT > (caught ? 0.13 : 0.22)) go('retract');
+        break;
+      case 'retract':                                        // 접기는 느리게. 몸은 스프링으로 되튐
+        swayGoal = 0;
+        lungeGoal = stT < 0.22 ? -5 : 0; neckGoal = stT < 0.3 ? 0.05 : 0; pitchGoal = 0;
+        if (caught) { eat = true; poseK = easeInOutCubic(stT / 0.44); if (stT > 0.5) { chew.dur = rand(1.8, 2.6); chew.ph = 0; chew.pause = 0.15; go('chew'); } }
+        else { poseK = easeInOutCubic(stT / 0.72); if (stT > 0.76) { cooldown = 1; go('idle'); } }
+        break;
+      case 'chew':                                           // 몇 번 빠르게 씹고 → 잠깐 쉼
+        swayGoal = 0.35; eat = true; poseK = 1;
+        lungeGoal = 0; neckGoal = 0;
+        if (chew.pause > 0) { chew.pause -= dt; m.mouth = approach(m.mouth, 0.08, 22, dt); }
+        else {
+          chew.ph += dt * TAU * chew.hz;
+          m.mouth = 0.5 - 0.5 * Math.cos(chew.ph);
+          if (chew.ph > chew.n * TAU) {
+            chew.ph = 0; chew.pause = rand(0.14, 0.36); chew.n = 3 + (Math.random() * 4 | 0); chew.hz = rand(4.6, 6.6);
+            lunge.v -= 26;                                   // 한 입 뜯으며 살짝 당김
+          }
+        }
+        fly.eaten = clamp(stT / chew.dur, 0, 1);
+        if (stT > chew.dur) { fly.mode = 'out'; fly.spawn = rand(0.8, 2.2); m.mouth = 0; cooldown = 1.6; go('reset'); }
+        break;
+      case 'reset':
+        swayGoal = 0.7; poseK = ease(stT / 0.55);
+        if (stT > 0.55) go('idle');
+        break;
+      case 'relax':
+        poseK = ease(stT / 0.42);
+        lungeGoal = 0; neckGoal = 0; pitchGoal = 0;
+        if (stT > 0.42) go('idle');
+        break;
+    }
+
+    // ----- 몸: 줄기 위에서 흔들림 -----
+    swayK = approach(swayK, swayGoal, swayGoal < swayK ? 16 : 0.9, dt);   // 멈출 땐 즉시, 다시 흔들 땐 서서히
+    const env = lerp(wind.calm, 1, wind.gust);
+    const sw = (lag) => Math.sin(wind.phase - lag) * env;
+    bend = S * (9 * wind.gust + 7 * sw(1.1));
+    if (st !== 'strike') spring(lunge, lungeGoal, 15, 0.42, dt);
+    neckOff = approach(neckOff, neckGoal, neckRate, dt);
+    pitchOff = approach(pitchOff, pitchGoal, 10, dt);
+    const b = stemAt(U0, bend, -Math.abs(bend) * 0.12);
+    const ang = Math.atan2(b.ty, b.tx), nx = b.ty, ny = -b.tx;
+    const fwd = (lunge.x + 6.5 * sw(0) * swayK) * S;
+    m.x = b.x + nx * STAND * S + b.tx * fwd;
+    m.y = b.y + ny * STAND * S + b.ty * fwd + Math.abs(sw(0)) * 1.4 * S * swayK;
+    m.pitch = ang + 0.04 * sw(0.6) * swayK + pitchOff;
+    m.neck = NECK + neckOff - 0.06 * sw(1.0) * swayK;        // 앞가슴은 몸보다 한 박자 늦게
+    m.abd = 0.16 + 0.03 * sw(1.6);
+    for (let i = 0; i < 4; i++) {
+      const f = stemAt(feetU[i], bend, -Math.abs(bend) * 0.12), fo = m.feet[i];
+      fo.x = f.x + f.ty * 2.4 * S; fo.y = f.y - f.tx * 2.4 * S; fo.a = Math.atan2(f.ty, f.tx);
+    }
+
+    // ----- 고개 -----
+    const holding = fly.mode === 'caught';
+    if (holding) trackHead(dt, m.lookAngle(fly.x, fly.y) + (st === 'chew' ? 0.05 * Math.sin(chew.ph) : 0), 9);
+    else if (alive) trackHead(dt, m.lookAngle(fly.x, fly.y), lock);
+    else {
+      if ((eye.idleT -= dt) <= 0) { eye.idleT = rand(1.1, 3); eye.idleGoal = rand(-0.55, 0.45); }
+      trackHead(dt, eye.idleGoal, 0);
+    }
+    m.gaze = eye.gaze;
+    m.focus = alive || holding ? fly : null;
+    m.antAim = approach(m.antAim, st === 'aim' || st === 'strike' || st === 'grab' ? 1 : 0, 9, dt);
+    m.update(dt);
+    m.solve();
+
+    // ----- 앞다리 -----
+    if (reachK > 0) {
+      // 파리가 '쥐는 곳'에 오도록 손목은 조금 더 멀리 뻗음
+      const a = m.J.armRoot, dx = aim.x - a.x, dy = aim.y - a.y, d = Math.hypot(dx, dy) || 1;
+      const rp = m.reach(aim.x + dx / d * 11 * S, aim.y + dy / d * 11 * S - 3 * S);
+      rp.tibia = tibia;
+      armNow = mixPose(armFrom, rp, reachK);
+      armNow.tibia = tibia;
+    } else if (eat) {
+      const mo = m.J.mouth;
+      const rp = m.reach(mo.x + 7 * S, mo.y - 9 * S + (st === 'chew' ? Math.sin(chew.ph) * 0.8 * S : 0));
+      rp.tibia = 0.62;
+      armNow = mixPose(armFrom, rp, poseK);
+    } else {
+      armNow = mixPose(armFrom, poseTo, poseK);
+    }
+    m.setArms(armNow);
+    if (st === 'idle') {                                     // 가만있을 때도 앞다리가 살짝 숨 쉼
+      m.arms[0].femur += 0.035 * sw(1.4) * swayK + 0.012 * Math.sin(t * 1.9);
+      m.arms[1].femur += 0.035 * sw(1.9) * swayK;
+      m.arms[0].coxa += 0.02 * sw(0.8) * swayK;
+    }
+    if (eat && st === 'chew') { m.arms[1].coxa += 0.1; m.arms[1].femur += 0.12; }
+    if (holding) { m.solve(); const g = m.J.grip[0]; fly.x = g.x; fly.y = g.y; }
+
+    draw(t, env);
+  });
+
+  // ---------- 그리기 ----------
+  function blade(x, h, lean, w, sway, color) {
+    const tx = x + (lean + sway) * h, ty = H - h, cx = x + lean * h * 0.25, cy = H - h * 0.6;
+    ctx.beginPath();
+    ctx.moveTo(x - w / 2, H + 2);
+    ctx.quadraticCurveTo(cx - w * 0.3, cy, tx, ty);
+    ctx.quadraticCurveTo(cx + w * 0.5, cy, x + w / 2, H + 2);
+    ctx.closePath();
+    ctx.fillStyle = color; ctx.fill();
+  }
+  function leaf(x, y, a, len, wid) {
+    ctx.save();
+    ctx.translate(x, y); ctx.rotate(a);
+    ctx.beginPath();
+    ctx.moveTo(0, 0); ctx.quadraticCurveTo(len * 0.4, -wid, len, 0); ctx.quadraticCurveTo(len * 0.45, wid * 0.8, 0, 0);
+    ctx.fillStyle = TH.leaf; ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(0, 0); ctx.quadraticCurveTo(len * 0.5, -wid * 0.1, len * 0.94, 0);
+    ctx.strokeStyle = TH.vein; ctx.lineWidth = Math.max(0.6, len * 0.014); ctx.stroke();
+    ctx.restore();
+  }
+  function draw(t, env) {
+    ctx.clearRect(0, 0, W, H);
+    // 뒤쪽 풀: 같은 바람, 서로 다른 박자
+    for (const g of grass) blade(g.x, g.h, g.lean, g.w, (0.05 * wind.gust + 0.045 * Math.sin(wind.phase - g.lag) * env) * g.k, g.far ? TH.back2 : TH.back);
+    // 줄기
+    const by = -Math.abs(bend) * 0.12, L = [], Rr = [];
+    for (let i = 0; i <= 26; i++) {
+      const u = i / 26 * 1.13, p = stemAt(u, bend, by), w = lerp(5.2, 1.6, i / 26) * S;
+      L.push([p.x + p.ty * w, p.y - p.tx * w]); Rr.push([p.x - p.ty * w, p.y + p.tx * w]);
+    }
+    ctx.beginPath();
+    L.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
+    Rr.reverse().forEach((p) => ctx.lineTo(p[0], p[1]));
+    ctx.closePath();
+    ctx.fillStyle = TH.stem; ctx.fill();
+    const fl = (k) => 0.1 * Math.sin(wind.phase * 1.6 + k) * env + 0.05 * wind.gust;
+    let p = stemAt(0.3, bend, by); leaf(p.x, p.y, Math.atan2(p.ty, p.tx) - 1.0 + fl(0), 78 * S, 17 * S);
+    p = stemAt(0.5, bend, by); leaf(p.x, p.y, Math.atan2(p.ty, p.tx) + 0.9 + fl(2), 62 * S, 14 * S);
+    p = stemAt(1.13, bend, by); leaf(p.x, p.y, Math.atan2(p.ty, p.tx) - 0.1 + fl(4), 70 * S, 14 * S);
+    p = stemAt(0.98, bend, by); leaf(p.x, p.y, Math.atan2(p.ty, p.tx) + 0.8 + fl(1), 46 * S, 11 * S);
+
+    m.draw(ctx);
+
+    if (fly.mode !== 'out') {
+      const k = fly.mode === 'caught' ? Math.pow(1 - fly.eaten, 0.6) : 1;
+      if (k > 0.03) drawFly(ctx, { x: fly.x, y: fly.y, size: S * 1.05 * k, dir: fly.dir < 0 ? -1 : 1, t: fly.t,
+                                   tilt: fly.mode === 'caught' ? 0.6 : clamp(fly.vy / (500 * S), -0.5, 0.5),
+                                   buzz: fly.mode === 'caught' ? (st === 'chew' ? 0 : 0.5) : 1 });
+    }
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,131 @@
+<!doctype html>
+<!--
+  거미줄을 '이동 목록'으로 미리 만들어 둠: 틀 → 바퀴살(균형 맞게 반대편부터) → 중심부 → 끈끈이 나선(바깥→안).
+  거미 위치 = 지금 이동의 진행도. 실(segment)의 길이도 같은 진행도라서, 지나간 자리에 실이 '뒤따라' 생김.
+  이동마다 속도·가감속이 조금씩 다르고, 고정점에선 잠깐 멈춰 배 끝으로 실을 톡 붙임(예비동작 겸 2차 동작).
+  발은 IK 걸음 + 가장 가까운 실 위로 스냅. 실은 처짐(2차 곡선)·바람 흔들림(중심일수록 크게)·빛 각도에 따른 반짝임.
+-->
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>거미 03 · 거미줄 짓기</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  .ui input[type=range] { width: 80px; }
+</style>
+</head>
+<body>
+<canvas class="fill" id="cv"></canvas>
+<p class="hint"><b id="phase">틀</b> · 틀→바퀴살→중심→나선(바깥→안)</p>
+<div class="ui">
+  <input type="range" id="speed" min="0.5" max="6" step="0.5" value="2.5" aria-label="속도">
+  <span id="spv">2.5×</span>
+</div>
+
+<script src="../../assets/spider.js"></script>
+<script>
+  const { Spider, Gait, Web, loop, fitCanvas, theme, onThemeChange, clamp, lerp, rand, ease, follow, angDiff } = SP;
+  const cv = document.getElementById('cv');
+  const phaseEl = document.getElementById('phase');
+  const speedEl = document.getElementById('speed');
+  const spvEl = document.getElementById('spv');
+  let th = theme();
+  let W = 0, H = 0, s = 10, web = null, sp = null, gait = null;
+  let speed = +speedEl.value;
+  speedEl.addEventListener('input', () => { speed = +speedEl.value; spvEl.textContent = speed + '×'; });
+
+  const view = fitCanvas(cv, (v) => { W = v.W; H = v.H; if (web) start(null); });
+  const ctx = view.ctx;
+  onThemeChange(() => { th = theme(); if (sp) sp.theme = th; });
+
+  // 공사 진행 상태
+  const job = { state: 'build', mi: 0, mt: 0, phase: 'move', t: 0, label: '' };
+
+  /** 새 거미줄 설계 + 거미 배치. from 이 있으면 거기서 걸어감 */
+  function start(from) {
+    const R = Math.min(W * 0.4, H * 0.37);
+    s = clamp(R * 0.085, 6, 15);
+    web = new Web({ W, H, cx: W * (0.5 + rand(-0.03, 0.03)), cy: H * (0.47 + rand(-0.03, 0.03)), R, s, start: from });
+    if (from) web.moorAlpha = 0;
+    const m0 = web.moves[0];
+    if (!sp || !from) {
+      sp = new Spider({ size: s, x: m0.a[0], y: m0.a[1], heading: Math.atan2(m0.b[1] - m0.a[1], m0.b[0] - m0.a[0]), shadow: false, reach: 0.64, theme: th });
+      gait = new Gait(sp, { threshold: 0.62, maxLead: 0.38, stepTime: 0.13, minStep: 0.045, lift: 0.4, spread: 1.08,
+                            snap: (x, y) => web.snap(x, y, 0.9 * s) });
+    }
+    sp.size = s;
+    Object.assign(job, { state: 'build', mi: 0, mt: 0, phase: 'move', t: 0 });
+  }
+
+  // ---------- 시뮬레이션 (속도 슬라이더만큼 빨리) ----------
+  let headGoal = 0;
+  function sim(dt) {
+    let x = sp.x, y = sp.y;
+    if (job.state === 'build') {
+      const m = web.moves[job.mi];
+      const len = Math.hypot(m.b[0] - m.a[0], m.b[1] - m.a[1]);
+      if (job.phase === 'move') {
+        const dur = Math.max(0.05, len / (m.speed * s));
+        job.mt += dt;
+        const tau = Math.min(1, job.mt / dur);
+        const u = lerp(tau, ease(tau), m.k);     // 출발·도착 감속 정도가 이동마다 다름
+        x = lerp(m.a[0], m.b[0], u); y = lerp(m.a[1], m.b[1], u);
+        if (m.lay >= 0) web.segs[m.lay].prog = u; // 지나간 만큼 실이 생김
+        if (len > 0.5) headGoal = Math.atan2(m.b[1] - m.a[1], m.b[0] - m.a[0]);
+        if (tau >= 1) { job.phase = 'pause'; job.mt = 0; }
+      } else {
+        job.mt += dt;
+        const k = clamp(job.mt / Math.max(m.pause, 1e-3), 0, 1);
+        // 고정점에 실 붙이기: 배 끝을 뒤로 톡 내밀었다 돌아옴
+        sp.abdPush = m.lay >= 0 && m.pause > 0.02 ? -0.18 * s * Math.sin(Math.PI * k) : 0;
+        const nx = web.moves[job.mi + 1];
+        // 멈춘 동안 다음 방향으로 미리 몸을 돌림 (예비동작)
+        if (nx && k > 0.35) { const l2 = Math.hypot(nx.b[0] - nx.a[0], nx.b[1] - nx.a[1]); if (l2 > 0.5) headGoal = Math.atan2(nx.b[1] - nx.a[1], nx.b[0] - nx.a[0]); }
+        if (job.mt >= m.pause) {
+          sp.abdPush = 0; job.mi++; job.mt = 0; job.phase = 'move';
+          if (job.mi >= web.moves.length) { job.state = 'rest'; job.t = 0; job.mi = web.moves.length - 1; }
+        }
+      }
+      if (m.label !== job.label) { job.label = m.label; phaseEl.textContent = m.label; }
+    } else {
+      headGoal = Math.PI / 2;   // 다 지으면 중심에서 머리를 아래로 두고 쉼
+      x = web.cx; y = web.cy;
+    }
+    const vx = (x - sp.x) / dt, vy = (y - sp.y) / dt;
+    sp.x = x; sp.y = y;
+    const omega = clamp(angDiff(sp.heading, headGoal) * 9, -8, 8);
+    sp.heading += omega * dt;
+    gait.update(dt, vx, vy, omega);
+    sp.update(dt, omega);
+  }
+
+  start(null);
+
+  loop((dt, t) => {
+    if (dt > 0) {
+      // 큰 배속에서도 다리가 따라오게 잘게 나눠서
+      const ds = dt * speed, n = Math.ceil(ds / 0.012);
+      for (let i = 0; i < n; i++) sim(ds / n);
+      web.update(dt);  // 바람은 실제 시간으로
+      if (web.moorAlpha < 1) web.moorAlpha = Math.min(1, web.moorAlpha + dt * 0.8);
+      if (job.state === 'rest') {
+        job.t += dt;
+        if (job.t > 4.5) { job.state = 'fade'; job.t = 0; }
+      } else if (job.state === 'fade') {
+        job.t += dt;
+        web.alpha = 1 - ease(job.t / 1.6);
+        web.moorAlpha = web.alpha;
+        if (job.t >= 1.6) start([sp.x, sp.y]);
+      }
+    }
+    ctx.clearRect(0, 0, W, H);
+    web.draw(ctx, th);
+    const o = web.offset(sp.x, sp.y);
+    ctx.save(); ctx.translate(o[0], o[1]);
+    sp.draw(ctx, th);
+    ctx.restore();
+  });
+</script>
+</body>
+</html>

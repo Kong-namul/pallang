@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="ko">
+<!--
+  반딧불이 01 · 반딧불이 밤
+  canvas 한 장에 30~50마리. 빛은 미리 그려 둔 방사형 그라디언트 스프라이트를 'lighter'(가산 합성)로 찍어 번짐을 표현.
+  깜빡임은 마리마다 다른 리듬: 천천히 차오름 → 짧고 밝은 번쩍 → 천천히 꺼짐 → 제각각 긴 어둠 (일부는 두 번 연속 깜빡).
+  빛나는 동안 살짝 위로 솟구침(J자 비행). 깊이(z)에 따라 크기·밝기·속도가 달라지고, 가까운 풀이 먼 반딧불이를 가림.
+  ※ 이 예제는 밤 장면 전용이라 라이트/다크 구분 없이 자체 어두운 색을 씀.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>반딧불이 01 · 반딧불이 밤</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  body { background: #05090d; }
+  .hint { color: rgba(196, 214, 186, 0.62); }
+  .hint b { color: #eaf6c8; }
+</style>
+</head>
+<body>
+<canvas class="fill" id="cv"></canvas>
+<p class="hint"><b>마리마다 다른 박자</b>로 천천히 차올랐다 번쩍, 서서히 꺼짐</p>
+
+<script>
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const rand = (a, b) => a + Math.random() * (b - a);
+  let W = 0, H = 0, S = 0, dpr = 1;
+
+  /* ---------- 빛 스프라이트: 미리 한 번 그려 두고 drawImage 로 찍기 ---------- */
+  function makeSprite(r, g, b) {
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const x = c.getContext('2d');
+    const gr = x.createRadialGradient(64, 64, 0, 64, 64, 64);
+    gr.addColorStop(0, `rgba(255,255,235,1)`);
+    gr.addColorStop(0.08, `rgba(${r},${g},${b},0.95)`);
+    gr.addColorStop(0.22, `rgba(${r},${g},${b},0.42)`);
+    gr.addColorStop(0.5, `rgba(${r},${g},${b},0.12)`);
+    gr.addColorStop(1, `rgba(${r},${g},${b},0)`);
+    x.fillStyle = gr; x.fillRect(0, 0, 128, 128);
+    return c;
+  }
+  const sprites = [makeSprite(214, 255, 110), makeSprite(236, 250, 120), makeSprite(180, 250, 120)];
+
+  /* ---------- 배경: 하늘·별·먼 숲 / 앞 풀숲 (리사이즈 때만 다시 그림) ---------- */
+  const bg = document.createElement('canvas'), bgx = bg.getContext('2d');
+  const fg = document.createElement('canvas'), fgx = fg.getContext('2d');
+  function paintBackdrop() {
+    for (const c of [bg, fg]) { c.width = W * dpr; c.height = H * dpr; }
+    bgx.setTransform(dpr, 0, 0, dpr, 0, 0); fgx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const sky = bgx.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, '#060b14'); sky.addColorStop(0.55, '#0b1619'); sky.addColorStop(1, '#0f1f18');
+    bgx.fillStyle = sky; bgx.fillRect(0, 0, W, H);
+    const moon = bgx.createRadialGradient(W * 0.82, H * 0.08, 0, W * 0.82, H * 0.08, S * 0.7);
+    moon.addColorStop(0, 'rgba(150,170,200,0.10)'); moon.addColorStop(1, 'rgba(150,170,200,0)');
+    bgx.fillStyle = moon; bgx.fillRect(0, 0, W, H);
+    for (let i = 0; i < W * H / 4000; i++) {
+      const y = Math.pow(Math.random(), 1.6) * H * 0.6;
+      bgx.globalAlpha = rand(0.15, 0.6) * (1 - y / (H * 0.6));
+      bgx.fillStyle = '#cfd8ea';
+      bgx.fillRect(rand(0, W), y, rand(0.6, 1.4), rand(0.6, 1.4));
+    }
+    bgx.globalAlpha = 1;
+    // 먼 숲 실루엣: 겹친 둥근 덤불
+    bgx.fillStyle = '#081210';
+    bgx.beginPath(); bgx.moveTo(0, H);
+    for (let x = 0; x <= W + 20; x += 18) bgx.lineTo(x, H * 0.62 - Math.abs(Math.sin(x * 0.013) * 30 + Math.sin(x * 0.041) * 12) * (S / 700));
+    bgx.lineTo(W, H); bgx.fill();
+    // 앞 풀숲: 아래쪽 풀잎들 (먼 반딧불이를 가림)
+    fgx.clearRect(0, 0, W, H);
+    const base = fgx.createLinearGradient(0, H * 0.78, 0, H);
+    base.addColorStop(0, 'rgba(4,10,8,0)'); base.addColorStop(0.45, '#040a08'); base.addColorStop(1, '#030806');
+    fgx.fillStyle = base; fgx.fillRect(0, H * 0.78, W, H * 0.22);
+    fgx.fillStyle = '#040a08';
+    const n = Math.round(W / 5);
+    for (let i = 0; i < n; i++) {
+      const x = rand(-10, W + 10), h = rand(0.07, 0.24) * H, lean = rand(-0.35, 0.35) * h, w = rand(1.5, 3.5);
+      fgx.beginPath(); fgx.moveTo(x - w, H);
+      fgx.quadraticCurveTo(x + lean * 0.3, H - h * 0.6, x + lean, H - h);
+      fgx.quadraticCurveTo(x + lean * 0.3 + w * 0.4, H - h * 0.6, x + w, H);
+      fgx.fill();
+    }
+  }
+
+  /* ---------- 반딧불이 ---------- */
+  let flies = [];
+  function makeFly() {
+    const z = Math.pow(Math.random(), 0.8);                   // 0 = 멀리, 1 = 가까이
+    const f = {
+      x: rand(0, W), y: rand(H * 0.25, H * 0.9), z,
+      a: rand(0, Math.PI * 2), turn: 0,
+      speed: rand(7, 15) * (0.45 + z * 0.75),
+      bobF: rand(0.5, 1.1), bobP: rand(0, 6.28), bobA: rand(2, 6),
+      bright: rand(0.65, 1) * (0.45 + 0.55 * z),
+      sprite: sprites[(Math.random() * sprites.length) | 0],
+      tempo: rand(0.75, 1.35),                                 // 마리마다 다른 박자
+      double: Math.random() < 0.2,                             // 두 번 연속 깜빡이는 종류
+      lift: 0, I: 0,
+    };
+    newFlash(f, true);
+    return f;
+  }
+  // 깜빡임 한 번: 차오름(느림) · 번쩍(짧게) · 꺼짐(느림) · 어둠(제각각)
+  function newFlash(f, first) {
+    f.t = first ? -rand(0, 5) : -rand(1.4, 4.5) * f.tempo;    // 음수 = 어둠 남은 시간
+    f.rise = rand(0.28, 0.5); f.peak = rand(0.06, 0.11); f.fade = rand(0.7, 1.3);
+    f.amp = rand(0.75, 1);
+    f.pulses = f.double ? 2 : 1;
+  }
+  function envelope(f) {
+    const t = f.t;
+    if (t < 0) return 0;
+    if (t < f.rise) { const u = t / f.rise; return 0.62 * u * u; }                 // ease-in 으로 차오름
+    const s = t - f.rise;
+    if (s < f.peak) { const u = s / f.peak; return 0.62 + 0.38 * Math.sin(Math.PI * u) - 0.1 * u; }  // 순간 최고 밝기
+    const q = (s - f.peak) / f.fade;
+    return 0.52 * Math.exp(-q * 3.6) * (1 - clamp(q - 0.85, 0, 1));                 // 지수적으로 꺼짐
+  }
+
+  function resize() {
+    W = innerWidth; H = innerHeight; S = Math.min(W, H); dpr = Math.min(2, devicePixelRatio || 1);
+    cv.width = W * dpr; cv.height = H * dpr;
+    paintBackdrop();
+    const n = clamp(Math.round(W * H / 14000), 30, 50);
+    while (flies.length < n) flies.push(makeFly());
+    flies.length = n;
+    flies.forEach((f) => { f.x = clamp(f.x, 0, W); f.y = clamp(f.y, H * 0.15, H * 0.92); });
+    flies.sort((a, b) => a.z - b.z);
+  }
+  addEventListener('resize', resize); resize();
+
+  function step(f, dt, t) {
+    // 배회: 부드럽게 바뀌는 회전 + 영역 밖으로 나가면 안쪽으로
+    f.turn += (rand(-1, 1) * 2.6 - f.turn * 1.3) * dt;
+    const cx = W / 2 - f.x, cy = H * 0.58 - f.y;
+    const out = Math.max(0, Math.abs(cx) / (W * 0.55), Math.abs(cy) / (H * 0.36)) - 1;
+    if (out > -0.15) {
+      let d = Math.atan2(cy, cx) - f.a;
+      d = Math.atan2(Math.sin(d), Math.cos(d));
+      f.turn += d * (out + 0.15) * 6 * dt;
+    }
+    f.a += f.turn * dt;
+    const k = S / 700;
+    // 빛나는 동안 살짝 위로 솟음 (J자) → 어두울 땐 아주 천천히 가라앉음
+    f.lift += ((f.I > 0.25 ? -14 : 4) - f.lift) * Math.min(1, dt * 2.5);
+    const sp = f.speed * k * (1 - f.I * 0.3);                  // 빛날 땐 조금 느려짐
+    f.x += Math.cos(f.a) * sp * dt;
+    f.y += (Math.sin(f.a) * sp * 0.6 + f.lift * k * (0.4 + f.z)) * dt;
+    // 깜빡임 진행
+    f.t += dt;
+    const end = f.rise + f.peak + f.fade * 1.4;
+    if (f.t > end) {
+      if (f.pulses > 1) { f.pulses--; f.t = -rand(0.25, 0.45); f.amp *= 0.8; f.rise *= 0.6; }
+      else newFlash(f, false);
+    }
+    f.I = envelope(f) * f.amp;
+  }
+
+  function draw(f, t) {
+    const k = S / 700;
+    const y = f.y + Math.sin(t * f.bobF + f.bobP) * f.bobA * k;
+    const I = f.I * f.bright;
+    const R = (20 + 40 * f.z) * k;
+    // 꺼져 있을 때도 아주 희미한 잔광 (몸이 완전히 사라지지 않게)
+    const glow = Math.max(I, 0.035 * f.bright);
+    ctx.globalAlpha = clamp(glow * 1.2, 0, 1);
+    const sz = R * (0.55 + 0.75 * glow);
+    ctx.drawImage(f.sprite, f.x - sz, y - sz, sz * 2, sz * 2);
+    if (I > 0.22) {                                            // 아주 밝을 때 주변 공기까지 은은하게
+      ctx.globalAlpha = (I - 0.22) * 0.3;
+      const big = R * 3.4;
+      ctx.drawImage(f.sprite, f.x - big, y - big, big * 2, big * 2);
+    }
+  }
+
+  let last = null;
+  function frame(now) {
+    const dt = last == null ? 0 : Math.min(0.05, (now - last) / 1000);
+    last = now;
+    const t = now / 1000;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+    ctx.drawImage(bg, 0, 0, W, H);
+    flies.forEach((f) => step(f, dt, t));
+    // 먼 무리 → 앞 풀숲 → 가까운 무리 순서로 그려 깊이감
+    ctx.globalCompositeOperation = 'lighter';
+    for (const f of flies) if (f.z < 0.5) draw(f, t);
+    ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+    ctx.drawImage(fg, 0, 0, W, H);
+    ctx.globalCompositeOperation = 'lighter';
+    for (const f of flies) if (f.z >= 0.5) draw(f, t);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>

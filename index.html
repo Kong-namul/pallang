@@ -1,0 +1,236 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>곤충 모션 도감</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hahmlet:wght@500;700&family=IBM+Plex+Sans+KR:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: 표본 서랍 — 위쪽 곤충 탭 줄, 아래 표본 상자(카드) 격자. 카드 하나 = 파일 하나 */
+  :root {
+    --bg: #edf0e8;
+    --surface: #fbfcf8;
+    --fg: #1e2622;
+    --muted: #5d6962;
+    --line: #d3dacf;
+    --accent: #c4531a;
+    --accent-soft: #f6dfcf;
+    --tag: #e3e9df;
+    --f-display: "Hahmlet", "IBM Plex Sans KR", Georgia, serif;
+    --f-body: "IBM Plex Sans KR", system-ui, -apple-system, sans-serif;
+    --f-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #111613; --surface: #18201b; --fg: #e5ebe6; --muted: #9aa79f; --line: #2a342e;
+      --accent: #f08a45; --accent-soft: #3a2619; --tag: #222b25; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #111613; --surface: #18201b; --fg: #e5ebe6; --muted: #9aa79f; --line: #2a342e;
+    --accent: #f08a45; --accent-soft: #3a2619; --tag: #222b25; color-scheme: dark;
+  }
+  body { background: var(--bg); color: var(--fg); font: 15px/1.6 var(--f-body); }
+  body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bg); }
+  .wrap { max-width: 1240px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+
+  header.top { padding-block: 36px 18px; display: grid; gap: 10px; }
+  .eyebrow { font: 500 12px/1 var(--f-mono); letter-spacing: .08em; color: var(--muted); text-transform: uppercase; }
+  h1 { margin: 0; font: 700 clamp(30px, 5vw, 48px)/1.1 var(--f-display); letter-spacing: -.01em; text-wrap: balance; }
+  .lede { margin: 0; max-width: 62ch; color: var(--muted); }
+  .lede code { font: 13px var(--f-mono); background: var(--tag); padding: 1px 6px; border-radius: 4px; color: var(--fg); }
+
+  nav.tabs { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg); border-bottom: 1px solid var(--line); }
+  .tablist { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; padding-block: 10px; }
+  .tablist::-webkit-scrollbar { display: none; }
+  .tab {
+    flex: none; font: 500 14px/1 var(--f-body); color: var(--muted); background: transparent; cursor: pointer;
+    border: 1px solid transparent; border-radius: 999px; padding: 9px 14px; display: inline-flex; gap: 7px; align-items: center;
+  }
+  .tab:hover { color: var(--fg); background: var(--tag); }
+  .tab[aria-selected="true"] { color: var(--fg); background: var(--surface); border-color: var(--line); box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+  .tab .n { font: 500 11px/1 var(--f-mono); color: var(--muted); }
+  .tab:focus-visible, .btn:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .panel { padding-block: 24px 40px; display: grid; gap: 22px; }
+  .panel-head { display: grid; gap: 6px; }
+  .panel-head h2 { margin: 0; font: 700 26px/1.2 var(--f-display); }
+  .panel-head p { margin: 0; color: var(--muted); max-width: 70ch; }
+
+  .rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin: 0; padding: 0; list-style: none; }
+  .rules li { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-size: 13.5px; line-height: 1.5; }
+  .rules b { display: block; font: 600 14px/1.3 var(--f-body); margin-bottom: 3px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); gap: 18px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
+  .shot { position: relative; aspect-ratio: 4 / 3; max-width: 100%; background: var(--tag); border-bottom: 1px solid var(--line); }
+  .shot iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: block; }
+  .body { padding: 14px 16px 16px; display: grid; gap: 8px; align-content: start; flex: 1; min-width: 0; }
+  .tagline { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .no { font: 500 12px/1 var(--f-mono); color: var(--accent); letter-spacing: .04em; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+  .chip { font: 500 11px/1 var(--f-mono); padding: 4px 7px; border-radius: 5px; background: var(--tag); color: var(--muted); }
+  .chip.css { background: var(--accent-soft); color: var(--accent); }
+  h3 { margin: 0; font: 600 17px/1.35 var(--f-body); text-wrap: balance; }
+  .sit { margin: 0; font-size: 13.5px; color: var(--muted); }
+  .sit span { color: var(--fg); font-weight: 500; }
+  .tip { margin: 0; font-size: 13.5px; line-height: 1.55; }
+  .ref { margin: 0; font-size: 12.5px; color: var(--muted); }
+  .ref a { color: var(--muted); }
+  .foot { display: flex; gap: 8px; align-items: center; margin-top: 4px; min-width: 0; }
+  .path { flex: 1; min-width: 0; font: 12px/1.3 var(--f-mono); color: var(--muted); overflow-wrap: anywhere; padding: 6px 8px; background: var(--bg); border-radius: 6px; user-select: all; }
+  .btn { flex: none; font: 500 12.5px/1 var(--f-body); color: var(--fg); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; cursor: pointer; text-decoration: none; }
+  .btn:hover { border-color: var(--muted); }
+  .btn.primary { background: var(--fg); color: var(--surface); border-color: var(--fg); }
+
+  .empty { padding: 28px; border: 1px dashed var(--line); border-radius: 12px; color: var(--muted); text-align: center; }
+
+  footer.more { border-top: 1px solid var(--line); padding-block: 28px 48px; display: grid; gap: 14px; }
+  footer h2 { margin: 0; font: 700 20px/1.2 var(--f-display); }
+  .links { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 6px 24px; margin: 0; padding: 0; list-style: none; font-size: 14px; }
+  .links a { color: var(--fg); }
+  .links small { color: var(--muted); }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 4px 0 0; padding: 0; list-style: none; font-size: 13px; color: var(--muted); }
+  .legend b { color: var(--fg); font-weight: 600; }
+  .key { display: inline-block; font: 500 11px/1 var(--f-mono); padding: 4px 7px; border-radius: 5px; margin-right: 6px; vertical-align: 1px; }
+  .key.file { background: var(--tag); color: var(--fg); }
+  .key.site { background: var(--accent-soft); color: var(--accent); }
+  @media (min-width: 760px) { .tablist { flex-wrap: wrap; overflow: visible; } }
+  .filters { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .filters .btn[aria-pressed="true"] { background: var(--fg); color: var(--surface); border-color: var(--fg); }
+  .chip.touch { background: var(--fg); color: var(--surface); }
+  .foot { flex-wrap: wrap; }
+  .foot .lbl { flex: 1 0 100%; font: 500 11px/1 var(--f-mono); color: var(--muted); letter-spacing: .04em; }
+  .sub { display: grid; gap: 10px; }
+  .sub h3 { font: 700 19px/1.3 var(--f-display); }
+  .sub > p { margin: 0; color: var(--muted); font-size: 13.5px; max-width: 70ch; }
+  .reflist { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 10px; }
+  .reflist li { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: grid; gap: 4px; min-width: 0; }
+  .reflist .rt { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .reflist a { color: var(--fg); font-weight: 600; overflow-wrap: anywhere; }
+  .reflist .rn { font-size: 13px; color: var(--muted); }
+  .reflist .ru { font: 11.5px/1.3 var(--f-mono); color: var(--muted); overflow-wrap: anywhere; }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <span class="eyebrow">Insect Motion · CSS / JS reference</span>
+    <h1>곤충 모션 도감</h1>
+    <p class="lede">상황별로 골라 쓰는 곤충·거미 움직임 예제 모음이에요. 미리보기 안에서 클릭·마우스·터치 반응도 그대로 돼요.</p>
+    <ul class="legend">
+      <li><span class="key file">내 파일</span><b>카드 하나 = 내 프로젝트 폴더 안 파일 하나.</b> <code>examples/…</code> 경로를 열어서 복사해 쓰면 돼요.</li>
+      <li><span class="key site">레퍼런스 사이트</span><b>바깥 인터넷 링크.</b> 각 탭 아래쪽에 모아 뒀어요.</li>
+    </ul>
+  </header>
+</div>
+
+<nav class="tabs" aria-label="곤충 종류">
+  <div class="wrap"><div class="tablist" role="tablist" id="tablist"></div></div>
+</nav>
+
+<main class="wrap">
+  <section class="panel" id="panel" role="tabpanel" aria-live="polite"></section>
+</main>
+
+<footer class="wrap more">
+  <h2>공통으로 쓰이는 기법</h2>
+  <ul class="links" id="common"></ul>
+</footer>
+
+<script src="gallery-data.js"></script>
+<script>
+  const { TABS, RULES, EX, REFS, COMMON } = window.GALLERY;
+
+  const tablist = document.getElementById('tablist');
+  const panel = document.getElementById('panel');
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  let touchOnly = false, current = null;
+
+  function card(e) {
+    const no = (e.file.match(/\/(\d+)-/) || [])[1] || '';
+    const chips = (e.touch ? '<span class="chip touch">손대면 반응</span>' : '') +
+      e.tech.map((t) => `<span class="chip${/^CSS/.test(t) ? ' css' : ''}">${esc(t)}</span>`).join('');
+    const ref = e.ref ? `<p class="ref">참고한 레퍼런스 · <a href="${esc(e.ref[1])}" target="_blank" rel="noopener">${esc(e.ref[0])}</a></p>` : '';
+    return `<article class="card">
+      <div class="shot"><iframe src="${esc(e.file)}" title="${esc(e.title)} 미리보기" loading="lazy"></iframe></div>
+      <div class="body">
+        <div class="tagline"><span class="no">No. ${esc(no)}</span><span class="chips">${chips}</span></div>
+        <h3>${esc(e.title)}</h3>
+        <p class="sit">쓰는 곳 · <span>${esc(e.situation)}</span></p>
+        <p class="tip">${esc(e.hint)}</p>
+        ${ref}
+        <div class="foot">
+          <span class="lbl">내 파일</span>
+          <code class="path">${esc(e.file)}</code>
+          <button class="btn copy" type="button" data-path="${esc(e.file)}">경로 복사</button>
+          <a class="btn primary" href="${esc(e.file)}" target="_blank" rel="noopener">크게 ↗</a>
+        </div>
+      </div>
+    </article>`;
+  }
+
+  function refItem(r) {
+    const lic = r.license ? `<span class="chip">${esc(r.license === '없음' ? '라이선스 없음 · 기법만 참고' : r.license)}</span>` : '';
+    return `<li>
+      <div class="rt"><span class="chip css">${esc(r.kind || '링크')}</span>${lic}</div>
+      <a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.name)}</a>
+      <span class="rn">${esc(r.note || '')}</span>
+      <span class="ru">${esc(r.url.replace(/^https?:\/\//, ''))}</span>
+    </li>`;
+  }
+
+  function show(id) {
+    const tab = TABS.find((t) => t.id === id) || TABS[0];
+    current = tab.id;
+    [...tablist.children].forEach((b) => b.setAttribute('aria-selected', String(b.dataset.id === tab.id)));
+    const all = EX.filter((e) => e.tab === tab.id);
+    const list = touchOnly ? all.filter((e) => e.touch) : all;
+    const nTouch = all.filter((e) => e.touch).length;
+    const rules = RULES[tab.id]
+      ? `<ul class="rules">${RULES[tab.id].map(([h, d]) => `<li><b>${esc(h)}</b>${esc(d)}</li>`).join('')}</ul>` : '';
+    const refs = REFS[tab.id] || [];
+    panel.setAttribute('aria-labelledby', 'tab-' + tab.id);
+    panel.innerHTML = `
+      <div class="panel-head"><h2>${esc(tab.name)}</h2><p>${esc(tab.blurb)}</p></div>
+      ${rules}
+      <div class="filters">
+        <button class="btn" type="button" data-f="all" aria-pressed="${!touchOnly}">전체 ${all.length}</button>
+        <button class="btn" type="button" data-f="touch" aria-pressed="${touchOnly}">손대면 반응 ${nTouch}</button>
+      </div>
+      ${list.length ? `<div class="grid">${list.map(card).join('')}</div>` : '<p class="empty">여기에 해당하는 예제가 아직 없어요.</p>'}
+      <div class="sub">
+        <h3>${esc(tab.name)} 레퍼런스 사이트</h3>
+        <p>내 폴더 파일이 아니라 바깥 사이트예요. 누르면 새 탭에서 열려요.</p>
+        ${refs.length ? `<ul class="reflist">${refs.map(refItem).join('')}</ul>` : '<p class="empty">아직 정리한 레퍼런스가 없어요.</p>'}
+      </div>`;
+  }
+
+  tablist.innerHTML = TABS.map((t) => {
+    const n = EX.filter((e) => e.tab === t.id).length;
+    return `<button class="tab" role="tab" id="tab-${t.id}" data-id="${t.id}" aria-selected="false">${esc(t.name)}<span class="n">${n || ''}</span></button>`;
+  }).join('');
+  tablist.addEventListener('click', (ev) => {
+    const b = ev.target.closest('.tab'); if (!b) return;
+    if (location.hash !== '#' + b.dataset.id) location.hash = b.dataset.id; else show(b.dataset.id);
+  });
+  addEventListener('hashchange', () => show(location.hash.slice(1)));
+  show(location.hash.slice(1));
+
+  document.getElementById('common').innerHTML = COMMON.map((c) =>
+    `<li><a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.name)}</a> <small>${esc(c.note)}</small></li>`).join('');
+
+  panel.addEventListener('click', (ev) => {
+    const f = ev.target.closest('[data-f]');
+    if (f) { touchOnly = f.dataset.f === 'touch'; show(current); return; }
+    const b = ev.target.closest('.copy'); if (!b) return;
+    const path = b.dataset.path;
+    const done = (ok) => { b.textContent = ok ? '복사됨' : '선택됨'; setTimeout(() => (b.textContent = '경로 복사'), 1400); };
+    const select = () => {
+      const code = b.previousElementSibling; const r = document.createRange(); r.selectNodeContents(code);
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r); done(false);
+    };
+    if (navigator.clipboard) navigator.clipboard.writeText(path).then(() => done(true), select); else select();
+  });
+</script>

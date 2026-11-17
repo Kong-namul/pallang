@@ -1,0 +1,145 @@
+<!doctype html>
+<!--
+  발마다 '심어 둔' 월드 좌표를 기억 → 몸이 움직여도 발은 미끄러지지 않음.
+  편한 발 자리(몸 기준)에서 문턱 이상 벗어나면 그 발만 들어 호를 그리며(ease-out) 내딛고, 속도만큼 앞을 예측해 디딤.
+  이웃 다리(같은 쪽 앞뒤·반대쪽 같은 번호)가 들려 있으면 기다림 → 박자를 안 줘도 4+4 교대 걸음이 저절로 생김.
+  무릎은 2-본 IK(코사인 법칙)로 풀고, 몸은 '달리다 멈추다' 리듬으로 움직임. 멈추면 한 발씩 자리를 정리.
+-->
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>거미 02 · 8다리 IK 걷기</title>
+<link rel="stylesheet" href="../../assets/base.css">
+<style>
+  canvas.fill { touch-action: none; }
+</style>
+</head>
+<body>
+<canvas class="fill" id="cv"></canvas>
+<p class="hint">포인터를 <b>따라감</b> · 멀어진 발만 한 발씩 내딛음</p>
+<label class="ui"><input type="checkbox" id="guide"> IK 가이드</label>
+
+<script src="../../assets/spider.js"></script>
+<script>
+  const { Spider, Gait, loop, fitCanvas, theme, onThemeChange, clamp, rand, follow, noise, angDiff, rgba, TAU } = SP;
+  const cv = document.getElementById('cv');
+  const guide = document.getElementById('guide');
+  let th = theme();
+  let W = 0, H = 0, s = 14, sp = null, gait = null;
+  const ground = document.createElement('canvas');
+
+  const view = fitCanvas(cv, (v) => {
+    W = v.W; H = v.H;
+    s = clamp(Math.min(W, H) * 0.045, 8, 22);
+    buildGround(v.dpr);
+    if (sp) { sp.size = s; sp.x = clamp(sp.x, 0, W); sp.y = clamp(sp.y, 0, H); gait.reset(); }
+  });
+  const ctx = view.ctx;
+  onThemeChange(() => { th = theme(); if (sp) sp.theme = th; buildGround(view.dpr); });
+
+  /** 바닥 결: 고정된 잔점·자갈 → 발이 '박혀 있는' 게 눈에 보이게 */
+  function buildGround(dpr) {
+    ground.width = Math.round(W * dpr); ground.height = Math.round(H * dpr);
+    const g = ground.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    for (let i = 0, n = Math.round((W * H) / 650); i < n; i++) {
+      g.fillStyle = rgba(th.muted, rand(0.05, 0.16));
+      g.beginPath(); g.arc(rand(0, W), rand(0, H), rand(0.4, 1.3), 0, TAU); g.fill();
+    }
+    for (let i = 0, n = Math.round((W * H) / 14000); i < n; i++) {
+      const x = rand(0, W), y = rand(0, H), r = rand(1.5, 4.5);
+      g.fillStyle = rgba(th.muted, 0.09);
+      g.beginPath(); g.ellipse(x, y, r, r * rand(0.55, 0.9), rand(0, TAU), 0, TAU); g.fill();
+      g.fillStyle = 'rgba(255,255,255,0.12)';
+      g.beginPath(); g.ellipse(x - r * 0.25, y - r * 0.3, r * 0.4, r * 0.25, -0.5, 0, TAU); g.fill();
+    }
+  }
+
+  sp = new Spider({ size: s, x: W * 0.5, y: H * 0.55, heading: rand(0, TAU), alt: 0.55, theme: th });
+  gait = new Gait(sp, { threshold: 0.7, maxLead: 0.42, stepTime: 0.15, lift: 0.5 });
+
+  // ---------- 포인터 ----------
+  const ptr = { x: 0, y: 0, on: false, last: -1e9 };
+  const setPtr = (e) => { ptr.x = e.clientX; ptr.y = e.clientY; ptr.on = true; ptr.last = performance.now() / 1000; };
+  cv.addEventListener('pointermove', setPtr);
+  cv.addEventListener('pointerdown', setPtr);
+  cv.addEventListener('pointerleave', () => { ptr.on = false; });
+  cv.addEventListener('pointercancel', () => { ptr.on = false; });
+
+  // ---------- 이동: 목표를 향하되 '달리다 멈추다' ----------
+  const mv = { v: 0, omega: 0, mode: 'go', timer: 1, goal: null, wanderT: 0 };
+  function steer(dt, t) {
+    const m = 2.5 * s;
+    const following = ptr.on && t - ptr.last < 5;
+    let gx, gy, arrive;
+    if (following) {
+      gx = clamp(ptr.x, m, W - m); gy = clamp(ptr.y, m, H - m); arrive = 2.4 * s;
+    } else {
+      // 배회: 대체로 앞쪽에서 다음 목표를 고름 (갑자기 뒤로 안 감)
+      if (!mv.goal || Math.hypot(mv.goal[0] - sp.x, mv.goal[1] - sp.y) < 1.2 * s || (mv.wanderT -= dt) < 0) {
+        const a = sp.heading + rand(-1.5, 1.5), d = Math.min(W, H) * rand(0.18, 0.42);
+        mv.goal = [clamp(sp.x + Math.cos(a) * d, m, W - m), clamp(sp.y + Math.sin(a) * d, m, H - m)];
+        mv.wanderT = rand(3, 7);
+      }
+      [gx, gy] = mv.goal; arrive = 0.8 * s;
+    }
+    mv.timer -= dt;
+    if (mv.timer <= 0) {
+      if (mv.mode === 'go') { mv.mode = 'rest'; mv.timer = following ? rand(0.08, 0.35) : rand(0.35, 1.6); }
+      else { mv.mode = 'go'; mv.timer = following ? rand(0.7, 2.2) : rand(0.5, 1.7); }
+    }
+    const dx = gx - sp.x, dy = gy - sp.y, d = Math.hypot(dx, dy);
+    const diff = angDiff(sp.heading, Math.atan2(dy, dx));
+    const vmax = (following ? 8 : 5) * s * (1 + 0.15 * noise(t * 2.7));
+    let want = 0, omegaGoal = 0;
+    if (d > arrive && mv.mode === 'go') {
+      want = Math.min(vmax, (d - arrive) * 3);
+      want *= clamp(1.4 - Math.abs(diff) / 1.3, 0.08, 1);   // 크게 돌아야 하면 제자리에서 먼저 돎
+      omegaGoal = clamp(diff * 6, -5.5, 5.5);
+    } else if (following && d <= arrive && Math.abs(diff) > 0.45 && mv.mode === 'go') {
+      omegaGoal = clamp(diff * 3, -2.5, 2.5);               // 도착하면 포인터 쪽으로 몸만 천천히
+    }
+    mv.omega += (omegaGoal - mv.omega) * follow(12, dt);
+    mv.v += (want - mv.v) * follow(want > mv.v ? 8 : 13, dt); // 출발은 빠르게, 정지는 더 빠르게
+    sp.heading += mv.omega * dt;
+    const vx = Math.cos(sp.heading) * mv.v, vy = Math.sin(sp.heading) * mv.v;
+    sp.x += vx * dt; sp.y += vy * dt;
+    return [vx, vy];
+  }
+
+  function drawGuides() {
+    const acc = th.accent, r = gait.threshold * s;
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 8; i++) {
+      const f = gait.feet[i], q = gait.target(i, 0);
+      ctx.setLineDash([2, 3]);
+      ctx.strokeStyle = rgba(acc, 0.3);
+      ctx.beginPath(); ctx.arc(q[0], q[1], r, 0, TAU); ctx.stroke();
+      if (f.on) {
+        ctx.strokeStyle = rgba(acc, 0.8);
+        ctx.beginPath(); ctx.moveTo(f.fx, f.fy); ctx.lineTo(f.tx, f.ty); ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      ctx.strokeStyle = rgba(acc, 0.55);
+      ctx.beginPath(); ctx.moveTo(f.x, f.y); ctx.lineTo(q[0], q[1]); ctx.stroke();
+      ctx.fillStyle = f.on ? rgba(acc, 0.95) : rgba(th.ink, 0.55);
+      ctx.beginPath(); ctx.arc(f.x, f.y, 2.2, 0, TAU); ctx.fill();
+    }
+  }
+
+  loop((dt, t) => {
+    if (dt > 0) {
+      const [vx, vy] = steer(dt, t);
+      gait.update(dt, vx, vy, mv.omega);
+      sp.alt = 0.55 + gait.bob / s;
+      sp.update(dt, mv.omega);
+    }
+    ctx.clearRect(0, 0, W, H);
+    ctx.drawImage(ground, 0, 0, W, H);
+    sp.draw(ctx, th);
+    if (guide.checked) drawGuides();
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>나비 03 · 화면 가로지르기</title>
+<!-- CSS offset-path 로 곡선 경로를 따라 이동. offset-rotate: auto 가 진행 방향으로 몸을 돌려줌.
+     JS는 800×450 설계 화면을 창 크기에 맞추는 3줄뿐 -->
+<link rel="stylesheet" href="../../assets/butterfly.css">
+<style>
+  .canvas { position: absolute; left: 50%; top: 50%; width: 800px; height: 450px;
+            transform: translate(-50%, -50%); perspective: 900px; }
+  .route { position: absolute; inset: 0; overflow: visible; }
+  .route path { fill: none; stroke: var(--muted); stroke-opacity: .35; stroke-width: 1.5; stroke-dasharray: 4 7; }
+  .bf {
+    --tilt: 22deg; --s: 1.05;
+    offset-path: path("M -90 270 C 60 120, 190 110, 260 220 S 420 370, 520 240 S 660 40, 900 150");
+    offset-rotate: auto 90deg;          /* 나비는 위를 보고 그려져 있어서 90도 더 돌림 */
+    animation: cross 9s cubic-bezier(.45, .05, .55, .95) infinite;
+  }
+  @keyframes cross { from { offset-distance: 0%; } to { offset-distance: 100%; } }
+  /* 경로 위에서 잔떨림: 박자 다른 작은 흔들림 */
+  .bf-plane { animation: jitter 1.7s ease-in-out infinite alternate; }
+  @keyframes jitter {
+    0% { translate: 0 0; } 30% { translate: 5px -4px; } 65% { translate: -4px 3px; } 100% { translate: 3px 5px; }
+  }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="canvas" id="canvas">
+    <svg class="route" viewBox="0 0 800 450"><path d="M -90 270 C 60 120, 190 110, 260 220 S 420 370, 520 240 S 660 40, 900 150"/></svg>
+    <div class="bf bf--css">
+      <div class="bf-plane"><div class="bf-shadow"></div><div class="bf-rig">
+        <div class="bf-wing bf-wing--l"><span style="--i:0"><i></i><span style="--i:1"><i></i><span style="--i:2"><i></i><span style="--i:3"><i></i><span style="--i:4"><i></i><span style="--i:5"><i></i><span style="--i:6"><i></i><span style="--i:7"><i></i><span style="--i:8"><i></i><span style="--i:9"><i></i></span></span></span></span></span></span></span></span></span></span></div><div class="bf-wing bf-wing--r"><span style="--i:0"><i></i><span style="--i:1"><i></i><span style="--i:2"><i></i><span style="--i:3"><i></i><span style="--i:4"><i></i><span style="--i:5"><i></i><span style="--i:6"><i></i><span style="--i:7"><i></i><span style="--i:8"><i></i><span style="--i:9"><i></i></span></span></span></span></span></span></span></span></span></span></div><div class="bf-body"></div>
+      </div></div>
+    </div>
+  </div>
+</div>
+<p class="hint"><b>offset-path</b> 곡선을 따라 왼쪽에서 오른쪽으로</p>
+<script>
+  // 800×450 설계 화면을 창에 꽉 차게 (cover)
+  const c = document.getElementById('canvas');
+  const fit = () => c.style.transform = `translate(-50%, -50%) scale(${Math.max(innerWidth / 800, innerHeight / 450)})`;
+  addEventListener('resize', fit); fit();
+</script>
+</body>
+</html>
